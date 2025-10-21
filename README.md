@@ -181,4 +181,55 @@ main        ← stable (Noam uniquement)
 Ce modèle permet à chaque membre de travailler de manière autonome tout en assurant la stabilité du projet global.
 
 ---
->>>>>>> 6be9e57 (Fix checklist formatting in README.md)
+
+
+## Exemple concret: 
+
+🔹 Contexte
+	•	Noam a poussé sur develop un fichier : fichier1.py
+	•	Matteo travaille localement sur fichier2.py, dans sa branche Matteo
+	•	Matteo veut mettre à jour sa branche pour avoir les nouveautés de Noam
+sans perdre ou écraser son propre code.
+
+⸻
+
+🧭 Étapes à suivre (solution propre)
+
+1️⃣ Matteo s’assure d’avoir tout sauvegardé et commité
+
+Avant toute manipulation, il doit enregistrer son travail local :
+
+git add .
+git commit -m "Travail en cours sur fichier2"
+
+Cela garde ses modifications en sécurité dans l’historique Git.
+
+⸻
+
+2️⃣ Récupérer la dernière version de develop depuis GitHub
+
+git fetch origin develop
+
+Cette commande télécharge les changements récents de develop (ici, ceux de Noam)
+mais ne les fusionne pas encore.
+
+⸻
+
+3️⃣ Fusionner ces changements dans la branche de Matteo
+
+git merge origin/develop
+
+Git va alors essayer de mélanger les deux historiques :
+	•	les fichiers modifiés par Noam (fichier1.py)
+	•	et ceux sur lesquels Matteo a travaillé (fichier2.py)
+
+⸻
+
+4️⃣ Cas possibles après le merge
+
+Situation	Message Git	Action à faire
+Aucun conflit	“Fast-forward” ou “Merge made by…”	Rien de spécial à faire
+Conflits	“Conflict in fichierX.py”	Git ajoute des marqueurs <<<<<<<, à résoudre manuellement
+
+
+
