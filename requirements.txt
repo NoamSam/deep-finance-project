@@ -1,0 +1,26 @@
+# Librairies fondamentales
+numpy==1.26.4
+pandas==2.2.3
+matplotlib==3.9.2
+seaborn==0.13.2
+scikit-learn==1.5.2
+yfinance==0.2.43
+pprintpp==0.4.0
+
+# Deep Learning
+tensorflow==2.17.0
+torch==2.4.0
+keras==3.4.1
+
+# Optimisation et finance
+cvxpy==1.5.2
+backtrader==1.9.78.123
+QuantStats==0.0.62
+
+# Cloud & utils (AWS / QuantConnect contextuels)
+boto3==1.35.12
+quantconnect==0.1.0
+
+# Dev & notebooks
+notebook
+python-dotenv
