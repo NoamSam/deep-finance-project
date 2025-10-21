@@ -151,13 +151,13 @@ Lucas	Branche personnelle (nouveau membre)	Lucas
 Checklist pour un nouveau membre
 
 Étape	Commande	Objectif
-1	git clone ...	Télécharger le projet
-2	bash setup.sh && source venv/bin/activate	Créer l’environnement
-3	git checkout -b Lucas && git push -u origin Lucas	Créer la branche personnelle
-4	git pull origin develop	Récupérer les nouveautés
-5	git add . && git commit && git push	Sauvegarder le code
-6	PR Lucas → develop	Soumettre le travail
-7	Merge et synchronisation	Maintenir le code à jour
+1.	git clone ...	Télécharger le projet
+2.	bash setup.sh && source venv/bin/activate	Créer l’environnement
+3.	git checkout -b Lucas && git push -u origin Lucas	Créer la branche personnelle
+4.	git pull origin develop	Récupérer les nouveautés
+5.	git add . && git commit && git push	Sauvegarder le code
+6.	PR Lucas → develop	Soumettre le travail
+7.	Merge et synchronisation	Maintenir le code à jour
 
 
 ⸻
