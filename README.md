@@ -170,14 +170,14 @@ Checklist pour un nouveau membre
 ⸻
 
 Organisation Git globale
-
+```
 main        ← stable (Noam uniquement)
  └── develop ← branche commune d’intégration
       ├── Noam
       ├── Jade
       ├── Matteo
       └── Lucas
-
+```
 Ce modèle permet à chaque membre de travailler de manière autonome tout en assurant la stabilité du projet global.
 
 ---
