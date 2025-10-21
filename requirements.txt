@@ -8,7 +8,7 @@ yfinance==0.2.43
 pprintpp==0.4.0
 
 # Deep Learning
-tensorflow==2.17.0
+tensorflow==2.20.0
 torch==2.4.0
 keras==3.4.1
 
