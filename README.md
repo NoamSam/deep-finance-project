@@ -137,20 +137,19 @@ git push
 
 Résumé des branches du projet
 
-Branche|Utilisation|Accès
--
-main	Version stable finale	Restreinte à Noam
--
-develop	Branche d’intégration commune	Libre
--
-Noam	Branche personnelle	Noam
--
-Jade	Branche personnelle	Jade
--
-Matteo	Branche personnelle	Matteo
--
-Lucas	Branche personnelle (nouveau membre)	Lucas
+Branche	Utilisation	Accès
 
+main	Version stable finale	Restreinte à Noam
+
+develop	Branche d’intégration commune	Libre
+
+Noam	Branche personnelle	Noam
+
+Jade	Branche personnelle	Jade
+
+Matteo	Branche personnelle	Matteo
+
+Lucas	Branche personnelle (nouveau membre)	Lucas
 
 ⸻
 
