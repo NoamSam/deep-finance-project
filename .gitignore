@@ -7,3 +7,7 @@ data/
 *.pkl
 *.h5
 *.json
+
+
+# macOS Finder files
+.DS_Store
