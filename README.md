@@ -182,34 +182,100 @@ Ce modèle permet à chaque membre de travailler de manière autonome tout en as
 
 ---
 
-
-## Exemple concret: 
-
-🔹 Contexte
-	•	Noam a poussé sur develop un fichier : fichier1.py
-	•	Matteo travaille localement sur fichier2.py, dans sa branche Matteo
-	•	Matteo veut mettre à jour sa branche pour avoir les nouveautés de Noam
-sans perdre ou écraser son propre code.
+Parfait — voici ton exemple concret réécrit et adapté à ton choix d’utiliser git pull origin develop --rebase, dans un style clair, cohérent avec le reste de ton README et sans emojis.
 
 ⸻
 
-🧭 Étapes à suivre (solution propre)
 
-1️⃣ Matteo s’assure d’avoir tout sauvegardé et commité
+## Exemple concret : mise à jour de sa branche sans écraser son travail
 
-Avant toute manipulation, il doit enregistrer son travail local :
-```
+### Contexte
+- Noam a poussé sur `develop` un fichier : `fichier1.py`
+- Matteo travaille localement sur `fichier2.py`, dans sa branche `Matteo`
+- Matteo souhaite mettre à jour sa branche pour récupérer les modifications de Noam
+  sans perdre ni écraser son propre code.
+
+---
+
+### Étapes à suivre (méthode recommandée)
+
+#### 1. Sauvegarder le travail local
+
+Avant toute mise à jour, Matteo doit enregistrer son travail dans un commit :
+
+```bash
 git add .
 git commit -m "Travail en cours sur fichier2"
 ```
-Cela garde ses modifications en sécurité dans l’historique Git.
+Cette étape garantit que ses modifications sont conservées dans l’historique Git
+avant d’intégrer les nouveautés de develop.
 
 ⸻
 
-2️⃣ Récupérer la dernière version de develop depuis GitHub
+2. Mettre à jour la branche à l’aide d’un rebase
+
+Depuis sa branche Matteo, il exécute :
 ```
 git pull origin develop --rebase
 ```
+Git va :
+	•	télécharger les nouveaux commits de develop (par exemple, le fichier ajouté par Noam) ;
+	•	rejouer les commits de Matteo au-dessus de ces modifications récentes.
 
+Cela évite les “merge commits” et maintient un historique linéaire et propre.
 
+⸻
 
+3. Résolution de conflits éventuels
+
+Si Git détecte un conflit, il indiquera les fichiers concernés :
+
+CONFLICT (content): Merge conflict in fichierX.py
+
+Matteo ouvre les fichiers concernés, corrige les zones marquées par Git, puis :
+```
+git add fichierX.py
+git rebase --continue
+```
+S’il souhaite abandonner l’opération :
+```
+git rebase --abort
+```
+
+⸻
+
+4. Finaliser et pousser les modifications
+
+Une fois le rebase terminé avec succès :
+```
+git push -f
+```
+Le paramètre -f (force push) est nécessaire car l’historique local de Matteo
+a été réécrit lors du rebase.
+Sa branche sur GitHub est alors mise à jour, intégrant :
+	•	les changements récents de develop (fichier1.py de Noam) ;
+	•	son propre travail (fichier2.py de Matteo).
+
+⸻
+
+Résumé
+
+Étape	Commande	Objectif
+```
+1	git add . && git commit -m "Travail en cours"	Sauvegarder son code local
+2	git pull origin develop --rebase	Intégrer les nouveautés sans merge commit
+3	git rebase --continue ou --abort	Gérer un conflit si nécessaire
+4	git push -f	Mettre à jour la branche distante
+```
+
+⸻
+
+Bonnes pratiques
+	•	Toujours commiter avant de lancer un rebase.
+	•	Ne jamais interrompre un rebase sans savoir où il en est.
+	•	Utiliser le rebase uniquement sur sa branche personnelle, jamais sur develop ou main.
+
+Ce processus garantit une intégration fluide des nouveautés du projet
+sans écrasement ni pollution de l’historique Git.
+
+---
