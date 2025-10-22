@@ -9,6 +9,16 @@ Développer un outil Python basé sur le Deep Learning (LSTM, CNN, GRU) pour :
 
 
 
+Parfait.
+Voici la version complète, corrigée et homogène de ton README, intégrant :
+	•	le workflow pour un nouveau membre,
+	•	l’exemple concret avec rebase,
+	•	et les bonnes pratiques Git du projet,
+dans un format GitHub-ready, clair et professionnel, sans emoji ni mise en forme superflue.
+
+⸻
+
+
 # Workflow pour un nouveau membre du projet
 
 ## 1. Clonage du dépôt
@@ -25,12 +35,14 @@ Cela télécharge le dépôt localement et configure le lien vers GitHub (origin
 
 2. Installation de l’environnement Python
 
-Depuis le dossier du projet (vous pouvez copier coller le chemin du fichier "deep-finance-project" ou simplement drag and drop le fichier dans votre terminal: 
+Depuis le dossier du projet (vous pouvez copier le chemin du fichier deep-finance-project
+ou simplement glisser le dossier dans votre terminal) :
 ```
 bash setup.sh
 source venv/bin/activate
 ```
-Cette étape crée un environnement virtuel Python et installe automatiquement toutes les dépendances nécessaires :
+Cette étape crée un environnement virtuel Python et installe automatiquement
+toutes les dépendances nécessaires :
 TensorFlow, PyTorch, Pandas, Scikit-learn, YFinance, etc.
 
 ⸻
@@ -56,7 +68,8 @@ Pour éviter le message “no upstream branch” :
 ```
 git config --global push.autoSetupRemote true
 ```
-Cette configuration permet à Git de relier automatiquement une nouvelle branche à son équivalent distant lors du premier push.
+Cette configuration permet à Git de relier automatiquement une nouvelle branche
+à son équivalent distant lors du premier push.
 
 ⸻
 
@@ -76,22 +89,23 @@ Les modifications restent isolées dans la branche Lucas sans impacter develop n
 
 Avant de commencer une nouvelle session de travail :
 ```
-git pull origin develop
+git pull origin develop --rebase
 ```
-Cette commande permet de récupérer les dernières mises à jour issues des autres branches intégrées dans develop.
+Cette commande permet de récupérer les dernières mises à jour issues des autres branches
+et d’assurer un historique propre, sans commits de fusion inutiles.
 
 ⸻
 
 7. Création d’une Pull Request
 
 Lorsque la fonctionnalité développée est stable :
-	1.	Aller sur GitHub Desktop 
+	1.	Ouvrir GitHub Desktop
 	2.	Cliquer sur Compare & pull request
 	3.	Vérifier la base et la comparaison :
 	•	Base : develop
 	•	Compare : Lucas
-	4.	Ajouter un titre et une description, par exemple :
-[Preprocessing] Ajout du nettoyage des données CAC40
+	4.	Ajouter un titre et une description clairs
+Exemple : [Preprocessing] Ajout du nettoyage des données CAC40
 	5.	Créer la Pull Request (PR)
 
 La PR sera relue, commentée et validée avant fusion dans develop.
@@ -100,7 +114,8 @@ La PR sera relue, commentée et validée avant fusion dans develop.
 
 8. Fusion dans develop
 
-Une fois la PR validée, elle est fusionnée dans la branche develop par le responsable du projet (Noam ou un reviewer désigné).
+Une fois la PR validée, elle est fusionnée dans la branche develop
+par le responsable du projet (Noam ou un reviewer désigné).
 La branche personnelle reste inchangée pour les futures évolutions.
 
 ⸻
@@ -115,7 +130,7 @@ git pull origin develop
 Puis mettre à jour sa propre branche :
 ```
 git checkout Lucas
-git pull origin develop
+git pull origin develop --rebase
 ```
 La branche Lucas est maintenant synchronisée avec develop.
 
@@ -138,31 +153,26 @@ git push
 Résumé des branches du projet
 
 Branche	Utilisation	Accès
-
 main	Version stable finale	Restreinte à Noam
-
 develop	Branche d’intégration commune	Libre
-
 Noam	Branche personnelle	Noam
-
 Jade	Branche personnelle	Jade
-
 Matteo	Branche personnelle	Matteo
-
 Lucas	Branche personnelle (nouveau membre)	Lucas
+
 
 ⸻
 
 Checklist pour un nouveau membre
 
 Étape	Commande	Objectif
-1.	git clone ...	Télécharger le projet
-2.	bash setup.sh && source venv/bin/activate	Créer l’environnement
-3.	git checkout -b Lucas && git push -u origin Lucas	Créer la branche personnelle
-4.	git pull origin develop	Récupérer les nouveautés
-5.	git add . && git commit && git push	Sauvegarder le code
-6.	PR Lucas → develop	Soumettre le travail
-7.	Merge et synchronisation	Maintenir le code à jour
+1	git clone ...	Télécharger le projet
+2	bash setup.sh && source venv/bin/activate	Créer l’environnement
+3	git checkout -b Lucas && git push -u origin Lucas	Créer la branche personnelle
+4	git pull origin develop --rebase	Récupérer les nouveautés
+5	git add . && git commit && git push	Sauvegarder le code
+6	PR Lucas → develop	Soumettre le travail
+7	Merge et synchronisation	Maintenir le code à jour
 
 
 ⸻
@@ -176,32 +186,27 @@ main        ← stable (Noam uniquement)
       ├── Matteo
       └── Lucas
 ```
-Ce modèle permet à chaque membre de travailler de manière autonome tout en assurant la stabilité du projet global.
-
----
-
-Parfait — voici ton exemple concret réécrit et adapté à ton choix d’utiliser git pull origin develop --rebase, dans un style clair, cohérent avec le reste de ton README et sans emojis.
+Ce modèle permet à chaque membre de travailler de manière autonome tout en assurant
+la stabilité du projet global.
 
 ⸻
 
+Exemple concret : mise à jour de sa branche sans écraser son travail
 
-## Exemple concret : mise à jour de sa branche sans écraser son travail
+Contexte
+	•	Noam a poussé sur develop un fichier : fichier1.py
+	•	Matteo travaille localement sur fichier2.py, dans sa branche Matteo
+	•	Matteo souhaite mettre à jour sa branche pour récupérer les modifications de Noam
+sans perdre ni écraser son propre code.
 
-### Contexte
-- Noam a poussé sur `develop` un fichier : `fichier1.py`
-- Matteo travaille localement sur `fichier2.py`, dans sa branche `Matteo`
-- Matteo souhaite mettre à jour sa branche pour récupérer les modifications de Noam
-  sans perdre ni écraser son propre code.
+⸻
 
----
+Étapes à suivre (méthode recommandée)
 
-### Étapes à suivre (méthode recommandée)
-
-#### 1. Sauvegarder le travail local
+1. Sauvegarder le travail local
 
 Avant toute mise à jour, Matteo doit enregistrer son travail dans un commit :
-
-```bash
+```
 git add .
 git commit -m "Travail en cours sur fichier2"
 ```
@@ -230,7 +235,7 @@ Si Git détecte un conflit, il indiquera les fichiers concernés :
 
 CONFLICT (content): Merge conflict in fichierX.py
 
-Matteo ouvre les fichiers concernés, corrige les zones marquées par Git, puis :
+Matteo ouvre les fichiers concernés, corrige les zones marquées par Git, puis exécute :
 ```
 git add fichierX.py
 git rebase --continue
@@ -258,14 +263,134 @@ Sa branche sur GitHub est alors mise à jour, intégrant :
 
 Résumé
 
-Étape	Commande	Objectif
+Commande	Objectif
 ```
-1	git add . && git commit -m "Travail en cours"	Sauvegarder son code local
-2	git pull origin develop --rebase	Intégrer les nouveautés sans merge commit
-3	git rebase --continue ou --abort	Gérer un conflit si nécessaire
-4	git push -f	Mettre à jour la branche distante
+git add . && git commit -m "Travail en cours"	#Sauvegarder son code local
+git pull origin develop --rebase	#Intégrer les nouveautés sans merge commit
+git rebase --continue ou git rebase --abort	#Gérer un conflit si nécessaire
+git push -f	#Mettre à jour la branche distante
 ```
 
+⸻
+
+Bonnes pratiques Git du projet
+
+Ces règles garantissent la stabilité du code, la clarté de l’historique et la cohérence du travail en équipe.
+
+⸻
+
+1. Structure et rôles des branches
+
+Branche	Rôle	Droits
+main	Version stable et validée du projet	Seul Noam peut pousser ou merger
+develop	Branche d’intégration commune	Ouverte à tous pour la fusion des travaux
+Noam, Jade, Matteo, etc.	Branches personnelles permanentes	Chaque membre travaille sur sa propre branche
+
+
+⸻
+
+2. Workflow standard avant chaque développement
+
+Avant de commencer à coder :
+```
+git pull origin develop --rebase
+```
+Cela permet de récupérer les dernières modifications et de travailler sur une base à jour.
+
+⸻
+
+3. Intégration du travail
+
+Chaque membre travaille sur sa branche personnelle, puis ouvre une Pull Request vers develop
+lorsqu’une fonctionnalité est prête.
+
+⸻
+
+4. Rebase systématique avant toute Pull Request
+
+Avant d’ouvrir une PR :
+```
+git pull origin develop --rebase
+```
+Ce rebase garantit un historique linéaire et sans merge commits inutiles.
+
+⸻
+
+5. Commits clairs et explicites
+
+Chaque commit doit décrire précisément les modifications effectuées.
+
+Format recommandé :
+
+[Catégorie] Description concise
+
+Exemples :
+
+[Data] Nettoyage des données manquantes
+[Model] Ajout du modèle LSTM pour la prédiction du CAC40
+[Visualization] Création du graphique d’évolution des rendements
+
+
+⸻
+
+6. Jamais de push direct sur main
+
+Aucun membre ne doit pousser directement sur main.
+Les mises à jour de main doivent provenir exclusivement de fusions validées
+depuis develop par le responsable du projet.
+
+⸻
+
+7. Fréquence de synchronisation
+
+Avant chaque session de travail :
+```
+git pull origin develop --rebase
+```
+En fin de journée :
+```
+git add .
+git commit -m "Sauvegarde de fin de journée"
+git push
+```
+
+⸻
+
+8. Résolution de conflits
+
+En cas de conflit lors d’un rebase :
+```
+git add <fichier>
+git rebase --continue
+```
+Pour abandonner le rebase :
+```
+git rebase --abort
+```
+
+⸻
+
+9. Relecture et validation
+
+Chaque Pull Request doit être relue avant fusion.
+Les commentaires GitHub servent à corriger ou améliorer le code avant validation.
+
+⸻
+
+10. Nettoyage et maintenance
+
+Les branches personnelles sont conservées tout au long du projet.
+Les branches temporaires (feature/..., fix/...) peuvent être supprimées après fusion
+afin de garder un dépôt propre.
+
+⸻
+
+Ce document constitue le guide officiel de collaboration Git pour le projet Deep Finance.
+
+---
+
+Souhaites-tu que je t’ajoute une **petite introduction** tout en haut du README (2–3 lignes)  
+expliquant que ce document sert de guide de collaboration Git pour ton projet ?
 ⸻
 
 Bonnes pratiques
