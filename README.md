@@ -208,28 +208,8 @@ Cela garde ses modifications en sécurité dans l’historique Git.
 
 2️⃣ Récupérer la dernière version de develop depuis GitHub
 ```
-git fetch origin develop
+git pull origin develop --rebase
 ```
-Cette commande télécharge les changements récents de develop (ici, ceux de Noam)
-mais ne les fusionne pas encore.
-
-⸻
-
-3️⃣ Fusionner ces changements dans la branche de Matteo
-```
-git merge origin/develop
-```
-Git va alors essayer de mélanger les deux historiques :
-	•	les fichiers modifiés par Noam (fichier1.py)
-	•	et ceux sur lesquels Matteo a travaillé (fichier2.py)
-
-⸻
-
-4️⃣ Cas possibles après le merge
-
-Situation	Message Git	Action à faire
-Aucun conflit	“Fast-forward” ou “Merge made by…”	Rien de spécial à faire
-Conflits	“Conflict in fichierX.py”	Git ajoute des marqueurs <<<<<<<, à résoudre manuellement
 
 
 
