@@ -40,6 +40,8 @@ ou simplement glisser le dossier dans votre terminal) :
 ```
 bash setup.sh
 source venv/bin/activate
+<<<<<<< HEAD
+=======
 ```
 Cette étape crée un environnement virtuel Python et installe automatiquement
 toutes les dépendances nécessaires :
