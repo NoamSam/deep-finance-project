@@ -24,6 +24,8 @@ dans un format GitHub-ready, clair et professionnel, sans emoji ni mise en forme
 ## 1. Clonage du dépôt
 
 Le nouveau membre récupère le projet depuis GitHub :
+! SUR WINDOWS telecharcher git:  https://git-scm.com/install/windows 
+Premier lien (distrubution -64 pour Windows) 
 
 ```bash
 git clone https://github.com/NoamSam/deep-finance-project.git
@@ -37,11 +39,11 @@ Cela télécharge le dépôt localement et configure le lien vers GitHub (origin
 
 Depuis le dossier du projet (vous pouvez copier le chemin du fichier deep-finance-project
 ou simplement glisser le dossier dans votre terminal) :
+
 ```
 bash setup.sh
-source venv/bin/activate
-<<<<<<< HEAD
-=======
+source venv/bin/activate 	#Sur mac/Linux
+venv\Scripts\Activate.ps1 	#Sur Windows
 ```
 Cette étape crée un environnement virtuel Python et installe automatiquement
 toutes les dépendances nécessaires :
