@@ -41,9 +41,10 @@ Depuis le dossier du projet (vous pouvez copier le chemin du fichier deep-financ
 ou simplement glisser le dossier dans votre terminal) :
 
 ```
-bash setup.sh
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+sudo bash setup.sh
 source venv/bin/activate 	#Sur mac/Linux
-venv\Scripts\Activate.ps1 	#Sur Windows
+sudo venv\Scripts\Activate.ps1 	#Sur Windows
 ```
 Cette étape crée un environnement virtuel Python et installe automatiquement
 toutes les dépendances nécessaires :
