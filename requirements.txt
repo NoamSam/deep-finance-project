@@ -6,6 +6,7 @@ seaborn
 scikit-learn
 yfinance
 pprintpp
+streamlit
 
 # Deep Learning
 tensorflow

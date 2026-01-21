@@ -86,7 +86,7 @@ git add .
 git commit -m "Ajout du module de preprocessing CAC40"
 git push
 ```
-Les modifications restent isolées dans la branche Lucas sans impacter develop ni main.
+Les modifications restent isolées dans la brnananche Lucas sans impacter develop ni main.
 
 ⸻
 
@@ -392,10 +392,6 @@ afin de garder un dépôt propre.
 
 Ce document constitue le guide officiel de collaboration Git pour le projet Deep Finance.
 
----
-
-Souhaites-tu que je t’ajoute une **petite introduction** tout en haut du README (2–3 lignes)  
-expliquant que ce document sert de guide de collaboration Git pour ton projet ?
 ⸻
 
 Bonnes pratiques
