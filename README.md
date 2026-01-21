@@ -86,7 +86,7 @@ git add .
 git commit -m "Ajout du module de preprocessing CAC40"
 git push
 ```
-Les modifications restent isolées dans la branche Lucas sans impacter develop ni main.
+Les modifications restent isolées dans la brnananche Lucas sans impacter develop ni main.
 
 ⸻
 
