@@ -4,9 +4,10 @@ pandas
 matplotlib
 seaborn
 scikit-learn
-yfinance
+yahooquery
 pprintpp
 streamlit
+watchdog
 
 # Deep Learning
 tensorflow
