@@ -17,19 +17,11 @@ def load_base_tickers():
 
 
 def format_base_ticker(ticker):
-    ticker = ticker.strip().upper()
-    if "." not in ticker:
-        return f"{ticker}.PA"
-    return ticker
+    return ticker.strip().upper()
 
 
 def normalize_ticker(ticker, base_tickers):
-    ticker = ticker.strip().upper()
-    if not ticker:
-        return ""
-    if "." not in ticker and ticker in base_tickers:
-        return f"{ticker}.PA"
-    return ticker
+    return ticker.strip().upper()
 
 
 def get_asset_path(ticker):
