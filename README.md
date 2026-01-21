@@ -1,10 +1,15 @@
 # Deep Finance Project — CAC 40 & Portfolio Prediction
 
 ## 🎯 Objectif
-Développer un outil Python basé sur le Deep Learning (LSTM, CNN, GRU) pour :
+Développer un outil Python basé sur le Deep Learning (LSTM, CNN, CNN puis LSTM) pour :
 - Prédire les rendements d'actions du CAC 40
 - Compléter les données manquantes (time-series completion)
 - Optimiser un portefeuille basé sur les prévisions
+
+## Plan d'entraînement
+- Modèle 1 : LSTM
+- Modèle 2 : CNN
+- Modèle 3 : CNN puis LSTM (architecture hybride)
 
 
 
