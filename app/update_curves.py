@@ -4,9 +4,14 @@ from datetime import datetime
 import pandas as pd
 
 try:
-    from yahooquery import Ticker
+    import yfinance as yf # type: ignore
 except Exception:  # pragma: no cover - optional dependency/runtime network
-    Ticker = None
+    yf = None
+
+try:
+    from yahooquery import Ticker as YahooQueryTicker
+except Exception:  # pragma: no cover - optional dependency/runtime network
+    YahooQueryTicker = None
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "assets"
@@ -20,33 +25,62 @@ def ensure_data_dir():
 def is_recent(path, max_age_hours=24):
     if not path.exists():
         return False
-    age_hours = (datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)).total_seconds() / 3600
+    age_hours = (
+        datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)
+    ).total_seconds() / 3600
     return age_hours < max_age_hours
 
 
-def infer_country(ticker):
-    ticker = ticker.upper()
-    if ticker.endswith(".PA"):
-        return "france"
-    return "united states"
+def _extract_date_column(df):
+    if "Date" in df.columns:
+        return df
+    if "date" in df.columns:
+        return df.rename(columns={"date": "Date"})
+    if "datetime" in df.columns:
+        return df.rename(columns={"datetime": "Date"})
+    if "index" in df.columns:
+        return df.rename(columns={"index": "Date"})
+    raise ValueError("Missing Date column")
+
+
+def _to_naive_timestamp(value):
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return pd.NaT
+    if getattr(ts, "tzinfo", None) is not None:
+        return ts.tz_localize(None)
+    return ts
 
 
 def normalize_history(data, ticker):
-    df = data.reset_index()
+    df = data.copy().reset_index()
     if "symbol" in df.columns:
-        df = df[df["symbol"].str.upper() == ticker.upper()]
+        df = df[df["symbol"].astype(str).str.upper() == ticker.upper()]
 
     rename_map = {
-        "date": "Date",
         "close": "Close",
         "adjclose": "Adj Close",
     }
     df = df.rename(columns=rename_map)
-    if "Date" not in df.columns:
-        raise ValueError(f"Missing Date column for {ticker}")
-    df["Date"] = pd.to_datetime(df["Date"], utc=True, errors="coerce")
+    df = _extract_date_column(df)
+    parsed_dates = pd.to_datetime(df["Date"], errors="coerce")
+    original_non_null = df["Date"].notna().sum()
+    parsed_non_null = parsed_dates.notna().sum()
+
+    if parsed_non_null < original_non_null:
+        # yahooquery can return mixed tz-aware / tz-naive values.
+        parsed_dates = df["Date"].apply(_to_naive_timestamp)
+        parsed_dates = pd.to_datetime(parsed_dates, errors="coerce")
+    else:
+        try:
+            if parsed_dates.dt.tz is not None:
+                parsed_dates = parsed_dates.dt.tz_localize(None)
+        except AttributeError:
+            parsed_dates = df["Date"].apply(_to_naive_timestamp)
+            parsed_dates = pd.to_datetime(parsed_dates, errors="coerce")
+
+    df["Date"] = parsed_dates
     df = df.dropna(subset=["Date"])
-    df["Date"] = df["Date"].dt.tz_localize(None)
     df = df.sort_values("Date").drop_duplicates("Date")
 
     if "Adj Close" not in df.columns and "Close" in df.columns:
@@ -58,29 +92,67 @@ def normalize_history(data, ticker):
     return df
 
 
-def fetch_asset(ticker, start=None, end=None):
-    if Ticker is None:
+def _fetch_with_yfinance(ticker, start=None, end=None):
+    if yf is None:
+        raise RuntimeError("yfinance is not available")
+
+    history = yf.Ticker(ticker).history(
+        start=start,
+        end=end,
+        interval="1d",
+        auto_adjust=False,
+    )
+    if history is None or history.empty:
+        raise ValueError(f"No data returned by yfinance for {ticker}")
+    return history
+
+
+def _fetch_with_yahooquery(ticker, start=None, end=None):
+    if YahooQueryTicker is None:
         raise RuntimeError("yahooquery is not available")
-    country = infer_country(ticker)
+
     try:
-        ticker_obj = Ticker(
+        ticker_obj = YahooQueryTicker(
             ticker,
-            country=country,
             timeout=10,
             retry=1,
             backoff=0.2,
         )
     except TypeError:
-        ticker_obj = Ticker(ticker, country=country)
-    start_value = pd.Timestamp(start).strftime("%Y-%m-%d") if start else None
-    end_value = pd.Timestamp(end).strftime("%Y-%m-%d") if end else None
+        ticker_obj = YahooQueryTicker(ticker)
     try:
-        data = ticker_obj.history(start=start_value, end=end_value, interval="1d")
+        data = ticker_obj.history(start=start, end=end, interval="1d")
     except KeyError as exc:
         raise ValueError(f"YahooQuery error for {ticker}: {exc}") from exc
     if data is None or data.empty:
-        raise ValueError(f"No data returned for {ticker}")
-    return normalize_history(data, ticker)
+        raise ValueError(f"No data returned by yahooquery for {ticker}")
+    return data
+
+
+def fetch_asset(ticker, start=None, end=None):
+    start_value = pd.Timestamp(start).strftime("%Y-%m-%d") if start else None
+    end_value = pd.Timestamp(end).strftime("%Y-%m-%d") if end else None
+
+    providers = [
+        ("yfinance", _fetch_with_yfinance),
+        ("yahooquery", _fetch_with_yahooquery),
+    ]
+    errors = []
+    for provider_name, provider_fetch in providers:
+        try:
+            data = provider_fetch(
+                ticker,
+                start=start_value,
+                end=end_value,
+            )
+            return normalize_history(data, ticker)
+        except Exception as exc:
+            errors.append(f"{provider_name}: {exc}")
+
+    error_message = " | ".join(errors) if errors else "no providers available"
+    raise RuntimeError(
+        f"Unable to fetch data for {ticker}. {error_message}"
+    )
 
 
 def update_assets(tickers, start=None, end=None, force=False, progress=None):

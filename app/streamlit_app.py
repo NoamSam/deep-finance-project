@@ -8,6 +8,85 @@ from update_curves import DATA_DIR, fetch_asset, update_assets
 
 BASE_TICKERS_PATH = Path(__file__).resolve().parent / "base_tickers.txt"
 
+ASSET_CATEGORIES = {
+    "Beautiful Seven (US)": [
+        "AAPL",
+        "AMZN",
+        "GOOG",
+        "META",
+        "MSFT",
+        "NVDA",
+        "TSLA",
+    ],
+    "Tout CAC 40": [
+        "ACA.PA",
+        "AC.PA",
+        "AI.PA",
+        "AIR.PA",
+        "ALO.PA",
+        "BN.PA",
+        "BNP.PA",
+        "CA.PA",
+        "CAP.PA",
+        "CS.PA",
+        "DG.PA",
+        "DSY.PA",
+        "EDEN.PA",
+        "EN.PA",
+        "ENGI.PA",
+        "ERF.PA",
+        "GLE.PA",
+        "HO.PA",
+        "KER.PA",
+        "LR.PA",
+        "MC.PA",
+        "MT.PA",
+        "ML.PA",
+        "OR.PA",
+        "PUB.PA",
+        "RI.PA",
+        "RMS.PA",
+        "RNO.PA",
+        "RUI.PA",
+        "SAF.PA",
+        "SAN.PA",
+        "SGO.PA",
+        "STMPA.PA",
+        "SU.PA",
+        "TEP.PA",
+        "TTE.PA",
+        "URW.PA",
+        "VIE.PA",
+        "VIV.PA",
+        "WLN.PA",
+    ],
+    "Luxe": [
+        "MC.PA",
+        "RMS.PA",
+        "KER.PA",
+        "RCO.PA",
+        "STMPA.PA",
+    ],
+    "Industrie": [
+        "AI.PA",
+        "EN.PA",
+        "SU.PA",
+        "VIE.PA",
+        "DG.PA",
+        "RNO.PA",
+        "STLAP.PA",
+        "FRVIA.PA",
+        "AIR.PA",
+    ],
+    "Defense": [
+        "AIR.PA",
+        "HO.PA",
+        "SAF.PA",
+        "EXENS.PA",
+        "TE.PA",
+    ],
+}
+
 
 def load_base_tickers():
     if not BASE_TICKERS_PATH.exists():
@@ -21,7 +100,28 @@ def format_base_ticker(ticker):
 
 
 def normalize_ticker(ticker, base_tickers):
-    return ticker.strip().upper()
+    ticker = ticker.strip().upper()
+    if not ticker:
+        return ""
+    if "." not in ticker and f"{ticker}.PA" in base_tickers:
+        return f"{ticker}.PA"
+    return ticker
+
+
+def normalize_category_name(name):
+    return "".join(
+        char.lower() if char.isalnum() else "_" for char in name
+    ).strip("_")
+
+
+def build_category_assets(known_assets):
+    known_set = set(known_assets)
+    category_assets = {}
+    for category, tickers in ASSET_CATEGORIES.items():
+        category_assets[category] = [
+            ticker for ticker in tickers if ticker in known_set
+        ]
+    return category_assets
 
 
 def get_asset_path(ticker):
@@ -67,33 +167,92 @@ def render_sidebar():
 
         st.markdown("### Actifs selectionnes")
         base_tickers = load_base_tickers()
+        base_ticker_set = set(base_tickers)
         known_assets = [format_base_ticker(ticker) for ticker in base_tickers]
         if DATA_DIR.exists():
             for path in DATA_DIR.glob("*.csv"):
-                known_assets.append(normalize_ticker(path.stem, base_tickers))
+                known_assets.append(normalize_ticker(path.stem, base_ticker_set))
         known_assets = sorted(set(filter(None, known_assets)))
+        category_assets = build_category_assets(known_assets)
+        available_categories = [
+            name
+            for name, assets in category_assets.items()
+            if assets
+        ]
+        default_categories = [
+            name
+            for name in ["Beautiful Seven (US)", "Tout CAC 40"]
+            if name in available_categories
+        ]
+        selected_categories = st.multiselect(
+            "Categories d'actions",
+            options=available_categories,
+            default=default_categories,
+            key="selected_asset_categories",
+            placeholder="Choisissez une ou plusieurs categories",
+        )
 
         if "assets_initialized" not in st.session_state:
             initial_selected = {"AIR.PA", "BNP.PA"}
             if DATA_DIR.exists():
                 for path in DATA_DIR.glob("*.csv"):
-                    normalized = normalize_ticker(path.stem, base_tickers)
+                    normalized = normalize_ticker(path.stem, base_ticker_set)
                     if normalized:
                         initial_selected.add(normalized)
             st.session_state.assets_initialized = True
         else:
             initial_selected = set()
 
-        select_col, clear_col = st.columns(2)
-        if select_col.button("select all", use_container_width=True):
-            for asset in known_assets:
-                st.session_state[f"asset_check_{asset}"] = True
-        if clear_col.button("clear all", use_container_width=True):
-            for asset in known_assets:
-                st.session_state[f"asset_check_{asset}"] = False
+        for category_name in selected_categories:
+            category_tickers = category_assets[category_name]
+            if not category_tickers:
+                continue
+            with st.expander(
+                f"{category_name} ({len(category_tickers)} actifs)",
+                expanded=False,
+            ):
+                category_key = normalize_category_name(category_name)
+                check_col, uncheck_col = st.columns(2)
+                if check_col.button(
+                    "Cocher toute la categorie",
+                    key=f"check_category_{category_key}",
+                    use_container_width=True,
+                ):
+                    for asset in category_tickers:
+                        st.session_state[f"asset_check_{asset}"] = True
+                if uncheck_col.button(
+                    "Decocher toute la categorie",
+                    key=f"uncheck_category_{category_key}",
+                    use_container_width=True,
+                ):
+                    for asset in category_tickers:
+                        st.session_state[f"asset_check_{asset}"] = False
+
+        visible_assets = sorted(
+            {
+                asset
+                for category_name in selected_categories
+                for asset in category_assets[category_name]
+            }
+        )
+
+        if visible_assets:
+            select_col, clear_col = st.columns(2)
+            if select_col.button(
+                "Cocher la selection", use_container_width=True
+            ):
+                for asset in visible_assets:
+                    st.session_state[f"asset_check_{asset}"] = True
+            if clear_col.button(
+                "Decocher la selection", use_container_width=True
+            ):
+                for asset in visible_assets:
+                    st.session_state[f"asset_check_{asset}"] = False
+        else:
+            st.info("Choisissez au moins une categorie d'actions.")
 
         selected_assets = []
-        for asset in known_assets:
+        for asset in visible_assets:
             key = f"asset_check_{asset}"
             if key not in st.session_state:
                 st.session_state[key] = asset in initial_selected
