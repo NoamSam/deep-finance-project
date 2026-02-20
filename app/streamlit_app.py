@@ -1,12 +1,26 @@
 from datetime import datetime
 from pathlib import Path
+import json
+import subprocess
+import sys
+import tempfile
 
 import pandas as pd
 import streamlit as st
 
-from update_curves import DATA_DIR, fetch_asset, update_assets
+try:
+    from app.update_curves import DATA_DIR, fetch_asset, update_assets
+except ModuleNotFoundError:
+    from update_curves import DATA_DIR, fetch_asset, update_assets
 
 BASE_TICKERS_PATH = Path(__file__).resolve().parent / "base_tickers.txt"
+MODEL_TYPE_MAP = {
+    "LSTM": "lstm",
+    "CNN": "cnn",
+    "CNN puis LSTM": "cnn_lstm",
+}
+MIN_WINDOW_SIZE = 5
+MIN_TOTAL_WINDOWS = 3
 
 ASSET_CATEGORIES = {
     "Beautiful Seven (US)": [
@@ -157,6 +171,191 @@ def load_asset_frame(ticker, start_date=None, end_date=None):
         raise ValueError(f"Missing Close column for {ticker}")
 
     return df[["Date", "Close"]]
+
+
+def _build_temp_training_csv(ticker, frame):
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    safe_ticker = ticker.replace("/", "_").replace(".", "_")
+    path = (
+        Path(tempfile.gettempdir())
+        / f"deep_finance_train_{safe_ticker}_{timestamp}.csv"
+    )
+    frame.to_csv(path, index=False)
+    return path
+
+
+def run_training_subprocess(csv_path, model_code, config):
+    runner_path = Path(__file__).resolve().parent / "train_runner.py"
+    command = [
+        sys.executable,
+        str(runner_path),
+        "--csv",
+        str(csv_path),
+        "--model",
+        model_code,
+        "--window-size",
+        str(config["window_size"]),
+        "--epochs",
+        str(config["epochs"]),
+        "--horizon",
+        str(config.get("horizon", 1)),
+        "--test-size",
+        str(config.get("test_size", 0.2)),
+        "--val-size",
+        str(config.get("val_size", 0.1)),
+        "--batch-size",
+        str(config.get("batch_size", 32)),
+        "--learning-rate",
+        str(config.get("learning_rate", 1e-3)),
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        details = completed.stderr.strip()
+        raise RuntimeError(details or "Training subprocess produced no output")
+
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Unable to parse training metrics: {lines[-1]}"
+        ) from exc
+
+    if not payload.get("ok"):
+        message = payload.get("error") or "Training subprocess failed"
+        raise RuntimeError(message)
+
+    if completed.returncode != 0:
+        # Non-zero with a parsed payload is still considered a failure.
+        message = payload.get("error") or completed.stderr.strip()
+        raise RuntimeError(message or "Training subprocess failed")
+
+    return payload["metrics"]
+
+
+def _effective_window_size(total_points, requested_window, horizon):
+    max_window = total_points - horizon - (MIN_TOTAL_WINDOWS - 1)
+    if max_window < MIN_WINDOW_SIZE:
+        return None
+    return min(requested_window, max_window)
+
+
+def train_selected_assets(state):
+    model_code = MODEL_TYPE_MAP[state["model_type"]]
+    requested_window_size = int(state["window_size"])
+    base_config = {
+        "epochs": int(state["epochs"]),
+        "verbose": 0,
+        "horizon": 1,
+    }
+
+    results = []
+    failures = []
+    total = len(state["assets"])
+    progress = st.progress(0)
+    status_line = st.empty()
+
+    for index, ticker in enumerate(state["assets"], start=1):
+        status_line.caption(f"Entrainement: {ticker} ({index}/{total})")
+        temp_csv_path = None
+        try:
+            frame = load_asset_frame(
+                ticker, state["start_date"], state["end_date"]
+            )
+            effective_window = _effective_window_size(
+                total_points=len(frame),
+                requested_window=requested_window_size,
+                horizon=base_config["horizon"],
+            )
+            if effective_window is None:
+                failures.append(
+                    {
+                        "ticker": ticker,
+                        "error": (
+                            "Pas assez de points pour entrainer. "
+                            f"Points={len(frame)}, requis>="
+                            f"{MIN_WINDOW_SIZE + base_config['horizon'] + (MIN_TOTAL_WINDOWS - 1)}."
+                        ),
+                    }
+                )
+                continue
+
+            asset_config = {
+                **base_config,
+                "window_size": int(effective_window),
+            }
+            temp_csv_path = _build_temp_training_csv(ticker, frame)
+            metrics = run_training_subprocess(
+                temp_csv_path, model_code, asset_config
+            )
+            results.append(
+                {
+                    "Actif": ticker,
+                    "MSE": float(metrics.get("mse", float("nan"))),
+                    "MAE": float(metrics.get("mae", float("nan"))),
+                    "Points utilises": int(len(frame)),
+                    "Fenetre utilisee": int(effective_window),
+                }
+            )
+        except Exception as exc:
+            failures.append({"ticker": ticker, "error": str(exc)})
+        finally:
+            if temp_csv_path and temp_csv_path.exists():
+                temp_csv_path.unlink(missing_ok=True)
+            progress.progress(index / total)
+
+    progress.empty()
+    status_line.empty()
+    return results, failures
+
+
+def render_training_section(state):
+    st.markdown("### Entrainement du modele")
+    requested_window_size = int(state["window_size"])
+    st.caption(
+        "Utilise les parametres de la sidebar "
+        "(fenetre, epochs, modele) sur les actifs selectionnes."
+    )
+
+    if st.button("Entrainer les actifs selectionnes", use_container_width=True):
+        if not state["assets"]:
+            st.info("Aucun actif selectionne.")
+        else:
+            with st.spinner("Entrainement en cours..."):
+                results, failures = train_selected_assets(state)
+            st.session_state.training_results = results
+            st.session_state.training_failures = failures
+            st.session_state.training_meta = {
+                "model_type": state["model_type"],
+                "window_size": requested_window_size,
+                "epochs": int(state["epochs"]),
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+    results = st.session_state.get("training_results", [])
+    failures = st.session_state.get("training_failures", [])
+    meta = st.session_state.get("training_meta")
+
+    if meta:
+        st.caption(
+            f"Dernier run ({meta['timestamp']}) | "
+            f"Modele: {meta['model_type']} | "
+            f"Fenetre: {meta['window_size']} | "
+            f"Epochs: {meta['epochs']}"
+        )
+
+    if results:
+        df_results = pd.DataFrame(results).sort_values("Actif")
+        st.dataframe(df_results, use_container_width=True)
+    if failures:
+        with st.expander("Erreurs d'entrainement"):
+            for item in failures:
+                st.write(f"{item['ticker']}: {item['error']}")
 
 
 def render_sidebar():
@@ -392,13 +591,16 @@ def render_sidebar():
 def render_predictions_tab(state):
     st.subheader("Analyse Multi-Actifs")
     st.caption("Donnees historiques des prix")
+    if not state["assets"]:
+        st.info("Aucun actif selectionne.")
+        return
+
+    render_training_section(state)
+
     if not state.get("generate_curves"):
         st.markdown(
             "Selectionnez des actifs et cliquez sur \"Generer les courbes\""
         )
-        return
-    if not state["assets"]:
-        st.info("Aucun actif selectionne.")
         return
 
     frames = []

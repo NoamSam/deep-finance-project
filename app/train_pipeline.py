@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from app.config import DEFAULT_CONFIG
 from app.data import load_price_series
@@ -41,9 +40,17 @@ def run_training(csv_path, model_type, config=None):
     if model_type == "lstm":
         # Follow the reference project training style:
         # MinMax scaling on close prices + sliding windows.
-        close_values = series.astype(float).values.reshape(-1, 1)
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_close = scaler.fit_transform(close_values).reshape(-1)
+        # Use NumPy scaling directly to avoid sklearn/tensorflow deadlocks.
+        close_values = series.astype(float).values
+        min_value = float(np.min(close_values))
+        max_value = float(np.max(close_values))
+        scale = max_value - min_value
+        if scale <= 0:
+            scaled_close = np.zeros_like(close_values, dtype=np.float32)
+        else:
+            scaled_close = ((close_values - min_value) / scale).astype(
+                np.float32
+            )
         X, y = make_windows(
             scaled_close,
             window_size=config["window_size"],
@@ -77,6 +84,8 @@ def run_training(csv_path, model_type, config=None):
     _raise_if_empty_split(X_train, X_val, X_test)
 
     if model_type != "lstm":
+        from sklearn.preprocessing import StandardScaler
+
         scaler = StandardScaler()
         train_shape = X_train.shape
         X_train = scaler.fit_transform(X_train.reshape(train_shape[0], -1)).reshape(
