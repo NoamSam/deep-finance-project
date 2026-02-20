@@ -282,7 +282,7 @@ def render_sidebar():
             "Taille de la fenetre",
             min_value=5,
             max_value=365,
-            value=30,
+            value=60,
             step=1,
         )
         epochs = st.number_input(

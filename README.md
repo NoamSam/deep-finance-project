@@ -1,3 +1,4 @@
+/tmp/sp500_similar_project
 # Deep Finance Project — CAC 40 & Portfolio Prediction
 
 ## 🎯 Objectif

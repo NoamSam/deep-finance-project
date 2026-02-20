@@ -1,5 +1,5 @@
 DEFAULT_CONFIG = {
-    "window_size": 30,
+    "window_size": 60,
     "horizon": 1,
     "test_size": 0.2,
     "val_size": 0.1,

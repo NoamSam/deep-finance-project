@@ -5,8 +5,9 @@ def build_lstm(input_shape, learning_rate):
     model = models.Sequential(
         [
             layers.Input(shape=input_shape),
-            layers.LSTM(64, return_sequences=False),
-            layers.Dense(32, activation="relu"),
+            layers.LSTM(50, return_sequences=True),
+            layers.LSTM(50, return_sequences=False),
+            layers.Dense(25),
             layers.Dense(1),
         ]
     )

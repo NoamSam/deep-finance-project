@@ -14,6 +14,6 @@ def train_model(model, X_train, y_train, X_val, y_val, config):
         epochs=config["epochs"],
         batch_size=config["batch_size"],
         callbacks=[early_stop],
-        verbose=1,
+        verbose=config.get("verbose", 0),
     )
     return history
