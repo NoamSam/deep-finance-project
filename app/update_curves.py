@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency/runtime network
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "assets"
 RELEVANT_COLUMNS = ["Date", "Adj Close"]
+DEFAULT_HISTORY_YEARS = 15
 
 
 def ensure_data_dir():
@@ -129,9 +130,26 @@ def _fetch_with_yahooquery(ticker, start=None, end=None):
     return data
 
 
+def resolve_history_bounds(start=None, end=None, default_years=DEFAULT_HISTORY_YEARS):
+    end_ts = (
+        pd.Timestamp(end).normalize()
+        if end is not None
+        else pd.Timestamp.today().normalize()
+    )
+    start_ts = (
+        pd.Timestamp(start).normalize()
+        if start is not None
+        else (end_ts - pd.DateOffset(years=default_years))
+    )
+    if start_ts > end_ts:
+        raise ValueError(
+            f"Invalid date range: start ({start_ts.date()}) is after end ({end_ts.date()})"
+        )
+    return start_ts.strftime("%Y-%m-%d"), end_ts.strftime("%Y-%m-%d")
+
+
 def fetch_asset(ticker, start=None, end=None):
-    start_value = pd.Timestamp(start).strftime("%Y-%m-%d") if start else None
-    end_value = pd.Timestamp(end).strftime("%Y-%m-%d") if end else None
+    start_value, end_value = resolve_history_bounds(start, end)
 
     providers = [
         ("yfinance", _fetch_with_yfinance),
