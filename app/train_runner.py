@@ -55,6 +55,11 @@ def parse_args():
         default=None,
         help="Optional output path for future forecast value (.npz)",
     )
+    parser.add_argument(
+        "--save-forecast-path",
+        default=None,
+        help="Optional output path for recursive forecast trajectory (.npz)",
+    )
     return parser.parse_args()
 
 
@@ -226,6 +231,59 @@ def save_forecast(path, forecast_value):
     )
 
 
+def save_forecast_path(path, forecast_values):
+    if not path or forecast_values is None:
+        return
+    forecast_array = np.asarray(forecast_values, dtype=np.float32).reshape(-1)
+    if forecast_array.size == 0:
+        return
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    steps = np.arange(1, forecast_array.size + 1, dtype=np.int32)
+    np.savez(
+        output_path,
+        steps=steps,
+        forecast_values=forecast_array,
+    )
+
+
+def _recursive_lstm_forecast_path(
+    model, close_values, scaler_values, window_size, forecast_steps
+):
+    if (
+        model is None
+        or scaler_values is None
+        or forecast_steps <= 0
+        or len(close_values) < window_size
+    ):
+        return None
+
+    min_value = float(scaler_values["min"][0])
+    max_value = float(scaler_values["max"][0])
+    scale = max_value - min_value
+
+    close_array = np.asarray(close_values, dtype=np.float32)
+    if scale > 0:
+        scaled_values = ((close_array - min_value) / scale).astype(np.float32)
+    else:
+        scaled_values = np.zeros_like(close_array, dtype=np.float32)
+
+    window = scaled_values[-window_size:].tolist()
+    predictions = []
+    for _ in range(forecast_steps):
+        model_input = np.asarray(window[-window_size:], dtype=np.float32).reshape(
+            1, window_size, 1
+        )
+        next_scaled = float(model.predict(model_input, verbose=0)[0][0])
+        window.append(next_scaled)
+        if scale > 0:
+            next_value = (next_scaled * scale) + min_value
+        else:
+            next_value = min_value
+        predictions.append(float(next_value))
+    return np.asarray(predictions, dtype=np.float32)
+
+
 def train_and_eval(args):
     close_values = load_close_series(args.csv)
     (
@@ -261,6 +319,8 @@ def train_and_eval(args):
     loss, mae = model.evaluate(X_test, y_test, verbose=0)
     y_pred = model.predict(X_test, verbose=0).reshape(-1)
     y_true = y_test.reshape(-1)
+    mse_norm = float(np.mean((y_pred - y_true) ** 2))
+    mae_norm = float(np.mean(np.abs(y_pred - y_true)))
 
     if args.model == "lstm" and scaler_values:
         min_value = float(scaler_values["min"][0])
@@ -273,27 +333,39 @@ def train_and_eval(args):
             y_true_out = np.full_like(y_true, min_value, dtype=np.float32)
             y_pred_out = np.full_like(y_pred, min_value, dtype=np.float32)
     else:
-        y_true_out = y_true
-        y_pred_out = y_pred
+        prev_close = close_values[idx_test - 1].astype(np.float32)
+        y_true_out = (prev_close * np.exp(y_true)).astype(np.float32)
+        y_pred_out = (prev_close * np.exp(y_pred)).astype(np.float32)
 
+    mse_price = float(np.mean((y_pred_out - y_true_out) ** 2))
+    mae_price = float(np.mean(np.abs(y_pred_out - y_true_out)))
+    rmse_price = float(np.sqrt(mse_price))
+    safe_mask = np.abs(y_true_out) > 1e-8
+    if np.any(safe_mask):
+        mape_pct = float(
+            np.mean(
+                np.abs(
+                    (y_pred_out[safe_mask] - y_true_out[safe_mask])
+                    / y_true_out[safe_mask]
+                )
+            )
+            * 100.0
+        )
+    else:
+        mape_pct = float("nan")
+
+    forecast_path = None
     forecast_value = None
     if args.model == "lstm" and scaler_values:
-        min_value = float(scaler_values["min"][0])
-        max_value = float(scaler_values["max"][0])
-        scale = max_value - min_value
-        if scale > 0:
-            scaled_close = ((close_values - min_value) / scale).astype(np.float32)
-        else:
-            scaled_close = np.zeros_like(close_values, dtype=np.float32)
-        if len(scaled_close) >= args.window_size:
-            last_window = scaled_close[-args.window_size:].reshape(
-                1, args.window_size, 1
-            )
-            forecast_scaled = float(model.predict(last_window, verbose=0)[0][0])
-            if scale > 0:
-                forecast_value = (forecast_scaled * scale) + min_value
-            else:
-                forecast_value = min_value
+        forecast_path = _recursive_lstm_forecast_path(
+            model=model,
+            close_values=close_values,
+            scaler_values=scaler_values,
+            window_size=args.window_size,
+            forecast_steps=args.horizon,
+        )
+        if forecast_path is not None and len(forecast_path) > 0:
+            forecast_value = float(forecast_path[-1])
 
     if args.save_model:
         output_path = Path(args.save_model)
@@ -302,9 +374,19 @@ def train_and_eval(args):
     save_scaler(args.save_scaler, scaler_values)
     save_eval(args.save_eval, y_true_out, y_pred_out, idx_test)
     save_forecast(args.save_forecast, forecast_value)
+    save_forecast_path(args.save_forecast_path, forecast_path)
     return {
-        "mse": float(loss),
-        "mae": float(mae),
+        "metrics_version": 2,
+        "loss_eval": float(loss),
+        "mae_eval": float(mae),
+        "mse": float(mse_price),
+        "mae": float(mae_price),
+        "mse_price": float(mse_price),
+        "mae_price": float(mae_price),
+        "rmse_price": float(rmse_price),
+        "mape_pct": float(mape_pct),
+        "mse_norm": float(mse_norm),
+        "mae_norm": float(mae_norm),
         "epochs_trained": int(len(history.history.get("loss", []))),
     }
 

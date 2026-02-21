@@ -32,6 +32,9 @@ PLOT_RESAMPLE_RULES = {
     "Hebdomadaire": "W-FRI",
     "Mensuel": "M",
 }
+TRAINING_SUBPROCESS_TIMEOUT_SEC = 900
+MIXED_DISPLAY_DAILY_LIMIT = 21
+MIXED_DISPLAY_WEEKLY_STEP = 5
 HORIZON_OPTIONS = {
     "1 jour": 1,
     "3 jours": 3,
@@ -213,6 +216,7 @@ def _get_training_artifact_paths(ticker, cache_key):
         "scaler": ticker_dir / f"{cache_key}_scaler.npz",
         "eval": ticker_dir / f"{cache_key}_eval.npz",
         "forecast": ticker_dir / f"{cache_key}_forecast.npz",
+        "forecast_path": ticker_dir / f"{cache_key}_forecast_path.npz",
     }
 
 
@@ -302,8 +306,15 @@ def _save_training_metadata(
         },
         "data_hash": data_hash,
         "metrics": {
+            "metrics_version": int(metrics.get("metrics_version", 1)),
             "mse": float(metrics.get("mse", float("nan"))),
             "mae": float(metrics.get("mae", float("nan"))),
+            "mse_price": float(metrics.get("mse_price", float("nan"))),
+            "mae_price": float(metrics.get("mae_price", float("nan"))),
+            "rmse_price": float(metrics.get("rmse_price", float("nan"))),
+            "mape_pct": float(metrics.get("mape_pct", float("nan"))),
+            "mse_norm": float(metrics.get("mse_norm", float("nan"))),
+            "mae_norm": float(metrics.get("mae_norm", float("nan"))),
             "epochs_trained": int(metrics.get("epochs_trained", 0)),
         },
         "artifacts": {
@@ -311,6 +322,7 @@ def _save_training_metadata(
             "scaler": str(paths["scaler"]),
             "eval": str(paths["eval"]),
             "forecast": str(paths["forecast"]),
+            "forecast_path": str(paths["forecast_path"]),
         },
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -370,6 +382,7 @@ def run_training_subprocess(
     scaler_output_path=None,
     eval_output_path=None,
     forecast_output_path=None,
+    forecast_path_output_path=None,
 ):
     runner_path = Path(__file__).resolve().parent / "train_runner.py"
     command = [
@@ -402,12 +415,25 @@ def run_training_subprocess(
         command.extend(["--save-eval", str(eval_output_path)])
     if forecast_output_path:
         command.extend(["--save-forecast", str(forecast_output_path)])
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        cwd=str(Path(__file__).resolve().parent.parent),
+    if forecast_path_output_path:
+        command.extend(
+            ["--save-forecast-path", str(forecast_path_output_path)]
+        )
+    timeout_sec = int(
+        config.get("timeout_sec", TRAINING_SUBPROCESS_TIMEOUT_SEC)
     )
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Training timeout after {timeout_sec}s"
+        ) from exc
     lines = [line for line in completed.stdout.splitlines() if line.strip()]
     if not lines:
         details = completed.stderr.strip()
@@ -507,119 +533,143 @@ def _load_forecast_value(forecast_path):
         return None
 
 
-def _predict_lstm_recursive_path(
-    frame, model_path, scaler_path, window_size, forecast_steps
-):
-    if not model_path.exists() or not scaler_path.exists() or forecast_steps <= 0:
+def _load_forecast_path_frame(forecast_path, frame, horizon_steps):
+    if not forecast_path.exists():
         return None
-
-    close_values = pd.to_numeric(frame["Close"], errors="coerce").dropna()
-    if len(close_values) < window_size:
-        return None
-
     try:
-        scaler_payload = np.load(scaler_path)
-        min_value = float(scaler_payload["min"][0])
-        max_value = float(scaler_payload["max"][0])
-    except Exception:
-        return None
-
-    scale = max_value - min_value
-    close_array = close_values.to_numpy(dtype=np.float32)
-    if scale > 0:
-        scaled_values = ((close_array - min_value) / scale).astype(np.float32)
-    else:
-        scaled_values = np.zeros_like(close_array, dtype=np.float32)
-
-    window = scaled_values[-window_size:].tolist()
-
-    try:
-        from tensorflow.keras import backend as keras_backend
-        from tensorflow.keras.models import load_model
-
-        model = load_model(model_path)
-        predictions = []
-        for step in range(1, forecast_steps + 1):
-            model_input = np.asarray(
-                window[-window_size:], dtype=np.float32
-            ).reshape(1, window_size, 1)
-            next_scaled = float(model.predict(model_input, verbose=0)[0][0])
-            window.append(next_scaled)
-            if scale > 0:
-                next_value = (next_scaled * scale) + min_value
-            else:
-                next_value = min_value
-            next_date = pd.to_datetime(frame["Date"].max()) + pd.offsets.BDay(step)
-            predictions.append(
-                {
-                    "Etape": step,
-                    "Date": next_date,
-                    "Prix predit": float(next_value),
-                }
-            )
-        keras_backend.clear_session()
-    except Exception:
-        return None
-
-    return pd.DataFrame(predictions)
-
-
-def _ensure_lstm_recursive_forecast(
-    ticker,
-    frame,
-    data_hash,
-    asset_config,
-    force_retrain,
-    start_date,
-    end_date,
-):
-    recursive_config = {**asset_config, "horizon": 1}
-    recursive_key = _build_training_cache_key(
-        ticker, "lstm", recursive_config, data_hash
-    )
-    recursive_paths = _get_training_artifact_paths(ticker, recursive_key)
-
-    recursive_cached = None
-    if not force_retrain:
-        recursive_cached = _load_cached_training_result(recursive_paths)
-        if (
-            recursive_cached is not None
-            and not recursive_paths["forecast"].exists()
-        ):
-            recursive_cached = None
-
-    if recursive_cached is None:
-        temp_csv_path = _build_temp_training_csv(ticker, frame)
-        try:
-            recursive_metrics = run_training_subprocess(
-                temp_csv_path,
-                "lstm",
-                recursive_config,
-                model_output_path=recursive_paths["model"],
-                scaler_output_path=recursive_paths["scaler"],
-                eval_output_path=recursive_paths["eval"],
-                forecast_output_path=recursive_paths["forecast"],
-            )
-        finally:
-            temp_csv_path.unlink(missing_ok=True)
-        _save_training_metadata(
-            paths=recursive_paths,
-            ticker=ticker,
-            model_code="lstm",
-            config=recursive_config,
-            metrics=recursive_metrics,
-            data_hash=data_hash,
-            start_date=start_date,
-            end_date=end_date,
+        payload = np.load(forecast_path)
+        if "steps" not in payload or "forecast_values" not in payload:
+            return None
+        steps = np.asarray(payload["steps"], dtype=np.int32).reshape(-1)
+        values = np.asarray(payload["forecast_values"], dtype=np.float64).reshape(
+            -1
         )
+    except Exception:
+        return None
 
-    return _predict_lstm_recursive_path(
-        frame=frame,
-        model_path=recursive_paths["model"],
-        scaler_path=recursive_paths["scaler"],
-        window_size=recursive_config["window_size"],
-        forecast_steps=asset_config["horizon"],
+    usable_length = min(len(steps), len(values))
+    if usable_length <= 0:
+        return None
+
+    steps = steps[:usable_length]
+    values = values[:usable_length]
+    valid = steps > 0
+    if horizon_steps > 0:
+        valid = valid & (steps <= int(horizon_steps))
+    if not np.any(valid):
+        return None
+
+    steps = steps[valid]
+    values = values[valid]
+    base_date = pd.to_datetime(frame["Date"].max())
+    forecast_dates = [base_date + pd.offsets.BDay(int(step)) for step in steps]
+    return pd.DataFrame(
+        {
+            "Etape": steps.astype(int),
+            "Date": forecast_dates,
+            "Prix predit": values.astype(float),
+        }
+    ).sort_values("Etape")
+
+
+def _build_single_step_forecast_frame(frame, horizon_steps, forecast_value):
+    if forecast_value is None:
+        return None
+    forecast_date = pd.to_datetime(frame["Date"].max()) + pd.offsets.BDay(
+        int(horizon_steps)
     )
+    return pd.DataFrame(
+        {
+            "Etape": [int(horizon_steps)],
+            "Date": [forecast_date],
+            "Prix predit": [float(forecast_value)],
+        }
+    )
+
+
+def _filter_future_points_for_display(future_points, horizon_steps):
+    if future_points is None or future_points.empty:
+        return future_points
+    points = (
+        future_points.sort_values("Etape")
+        .drop_duplicates(subset=["Etape"], keep="last")
+        .copy()
+    )
+    if int(horizon_steps) <= MIXED_DISPLAY_DAILY_LIMIT:
+        return points
+    last_step = int(points["Etape"].max())
+    weekly_mask = (points["Etape"] % MIXED_DISPLAY_WEEKLY_STEP) == 0
+    keep_mask = weekly_mask | (points["Etape"] == last_step)
+    return points.loc[keep_mask].copy()
+
+
+def _future_rows_for_table(ticker, future_points, horizon_label, source):
+    if future_points is None or future_points.empty:
+        return []
+    rows = []
+    for _, row in future_points.iterrows():
+        rows.append(
+            {
+                "Actif": ticker,
+                "Etape": int(row["Etape"]),
+                "Date prevision": pd.to_datetime(row["Date"]).strftime(
+                    "%Y-%m-%d"
+                ),
+                "Prix predit": float(row["Prix predit"]),
+                "Horizon": horizon_label,
+                "Source": source,
+            }
+        )
+    return rows
+
+
+def _metric_value(metrics, key):
+    value = metrics.get(key)
+    if value is None:
+        return np.nan
+    try:
+        return float(value)
+    except Exception:
+        return np.nan
+
+
+def _build_result_row(ticker, metrics, points_count, effective_window, source):
+    version = int(metrics.get("metrics_version", 1))
+    if version >= 2:
+        mae_price = _metric_value(metrics, "mae_price")
+        rmse_price = _metric_value(metrics, "rmse_price")
+        mape_pct = _metric_value(metrics, "mape_pct")
+        mae_norm = _metric_value(metrics, "mae_norm")
+    else:
+        # Legacy cache: only normalized metrics available.
+        mae_price = np.nan
+        rmse_price = np.nan
+        mape_pct = np.nan
+        mae_norm = _metric_value(metrics, "mae")
+    return {
+        "Actif": ticker,
+        "MAE prix": mae_price,
+        "RMSE prix": rmse_price,
+        "MAPE %": mape_pct,
+        "MAE norm": mae_norm,
+        "Points utilises": int(points_count),
+        "Fenetre utilisee": int(effective_window),
+        "Source": source,
+    }
+
+
+def _select_plot_frame_for_mode(plot_frame, mode_label):
+    if plot_frame is None or plot_frame.empty:
+        return None
+    if mode_label == "Backtest":
+        filtered = plot_frame[plot_frame["Reel"].notna()].copy()
+    elif mode_label == "Futur":
+        filtered = plot_frame[plot_frame["Reel"].isna()].copy()
+    else:
+        filtered = plot_frame.copy()
+    if filtered.empty:
+        return None
+    return filtered
 
 
 def train_selected_assets(state):
@@ -633,7 +683,7 @@ def train_selected_assets(state):
         "horizon": horizon_steps,
         "test_size": DEFAULT_TEST_SIZE,
         "val_size": DEFAULT_VAL_SIZE,
-        "batch_size": 32,
+        "batch_size": 128,
         "learning_rate": 1e-3,
     }
     required_windows = _required_min_windows(
@@ -647,11 +697,13 @@ def train_selected_assets(state):
     total = len(state["assets"])
     progress = st.progress(0)
     status_line = st.empty()
+    legacy_path_assets = []
 
     for index, ticker in enumerate(state["assets"], start=1):
-        status_line.caption(f"Entrainement: {ticker} ({index}/{total})")
+        status_prefix = f"{ticker} ({index}/{total})"
         temp_csv_path = None
         try:
+            status_line.caption(f"{status_prefix} - chargement")
             frame = load_asset_frame(
                 ticker,
                 state["start_date"],
@@ -693,86 +745,66 @@ def train_selected_assets(state):
             cached_payload = None
             if not force_retrain:
                 cached_payload = _load_cached_training_result(artifact_paths)
-                if (
-                    cached_payload is not None
-                    and model_code == "lstm"
-                    and not artifact_paths["forecast"].exists()
-                ):
-                    cached_payload = None
             if cached_payload:
+                status_line.caption(f"{status_prefix} - cache")
                 cached_metrics = cached_payload["metrics"]
                 cached_plot_frame = _load_eval_frame(artifact_paths["eval"], frame)
                 if model_code == "lstm":
-                    recursive_future = _ensure_lstm_recursive_forecast(
-                        ticker=ticker,
-                        frame=frame,
-                        data_hash=data_hash,
-                        asset_config=asset_config,
-                        force_retrain=force_retrain,
-                        start_date=state["start_date"],
-                        end_date=state["end_date"],
+                    status_line.caption(
+                        f"{status_prefix} - chargement forecast path"
                     )
-                    if recursive_future is not None and not recursive_future.empty:
-                        cached_plot_frame = _append_future_prediction_path(
-                            cached_plot_frame, recursive_future
-                        )
-                        for _, row in recursive_future.iterrows():
-                            future_forecasts.append(
-                                {
-                                    "Actif": ticker,
-                                    "Etape": int(row["Etape"]),
-                                    "Date prevision": pd.to_datetime(
-                                        row["Date"]
-                                    ).strftime("%Y-%m-%d"),
-                                    "Prix predit": float(row["Prix predit"]),
-                                    "Horizon": state.get(
-                                        "horizon_label", "1 jour"
-                                    ),
-                                    "Source": "Cache",
-                                }
-                            )
-                    else:
+                    future_points = _load_forecast_path_frame(
+                        artifact_paths["forecast_path"],
+                        frame,
+                        int(asset_config["horizon"]),
+                    )
+                    if future_points is None or future_points.empty:
                         forecast_value = _load_forecast_value(
                             artifact_paths["forecast"]
                         )
-                        if forecast_value is not None:
-                            forecast_date = pd.to_datetime(frame["Date"].max()) + pd.offsets.BDay(
-                                int(asset_config["horizon"])
+                        future_points = _build_single_step_forecast_frame(
+                            frame=frame,
+                            horizon_steps=int(asset_config["horizon"]),
+                            forecast_value=forecast_value,
+                        )
+                        if (
+                            int(asset_config["horizon"]) > 1
+                            and artifact_paths["forecast"].exists()
+                            and not artifact_paths["forecast_path"].exists()
+                        ):
+                            legacy_path_assets.append(ticker)
+                    future_points = _filter_future_points_for_display(
+                        future_points, int(asset_config["horizon"])
+                    )
+                    if future_points is not None and not future_points.empty:
+                        cached_plot_frame = _append_future_prediction_path(
+                            cached_plot_frame, future_points
+                        )
+                        future_forecasts.extend(
+                            _future_rows_for_table(
+                                ticker=ticker,
+                                future_points=future_points,
+                                horizon_label=state.get(
+                                    "horizon_label", "1 jour"
+                                ),
+                                source="Cache",
                             )
-                            cached_plot_frame = _append_future_prediction_row(
-                                cached_plot_frame,
-                                forecast_date,
-                                forecast_value,
-                            )
-                            future_forecasts.append(
-                                {
-                                    "Actif": ticker,
-                                    "Etape": int(asset_config["horizon"]),
-                                    "Date prevision": forecast_date.strftime(
-                                        "%Y-%m-%d"
-                                    ),
-                                    "Prix predit": float(forecast_value),
-                                    "Horizon": state.get(
-                                        "horizon_label", "1 jour"
-                                    ),
-                                    "Source": "Cache",
-                                }
-                            )
+                        )
                 if cached_plot_frame is not None and not cached_plot_frame.empty:
                     prediction_plots[ticker] = cached_plot_frame
                 results.append(
-                    {
-                        "Actif": ticker,
-                        "MSE": float(cached_metrics.get("mse", float("nan"))),
-                        "MAE": float(cached_metrics.get("mae", float("nan"))),
-                        "Points utilises": int(len(frame)),
-                        "Fenetre utilisee": int(effective_window),
-                        "Source": "Cache",
-                    }
+                    _build_result_row(
+                        ticker=ticker,
+                        metrics=cached_metrics,
+                        points_count=len(frame),
+                        effective_window=effective_window,
+                        source="Cache",
+                    )
                 )
                 continue
 
             temp_csv_path = _build_temp_training_csv(ticker, frame)
+            status_line.caption(f"{status_prefix} - train")
             metrics = run_training_subprocess(
                 temp_csv_path,
                 model_code,
@@ -781,6 +813,7 @@ def train_selected_assets(state):
                 scaler_output_path=artifact_paths["scaler"],
                 eval_output_path=artifact_paths["eval"],
                 forecast_output_path=artifact_paths["forecast"],
+                forecast_path_output_path=artifact_paths["forecast_path"],
             )
             _save_training_metadata(
                 paths=artifact_paths,
@@ -794,70 +827,44 @@ def train_selected_assets(state):
             )
             trained_plot_frame = _load_eval_frame(artifact_paths["eval"], frame)
             if model_code == "lstm":
-                recursive_future = _ensure_lstm_recursive_forecast(
-                    ticker=ticker,
-                    frame=frame,
-                    data_hash=data_hash,
-                    asset_config=asset_config,
-                    force_retrain=force_retrain,
-                    start_date=state["start_date"],
-                    end_date=state["end_date"],
+                status_line.caption(f"{status_prefix} - chargement forecast path")
+                future_points = _load_forecast_path_frame(
+                    artifact_paths["forecast_path"],
+                    frame,
+                    int(asset_config["horizon"]),
                 )
-                if recursive_future is not None and not recursive_future.empty:
-                    trained_plot_frame = _append_future_prediction_path(
-                        trained_plot_frame, recursive_future
-                    )
-                    for _, row in recursive_future.iterrows():
-                        future_forecasts.append(
-                            {
-                                "Actif": ticker,
-                                "Etape": int(row["Etape"]),
-                                "Date prevision": pd.to_datetime(
-                                    row["Date"]
-                                ).strftime("%Y-%m-%d"),
-                                "Prix predit": float(row["Prix predit"]),
-                                "Horizon": state.get(
-                                    "horizon_label", "1 jour"
-                                ),
-                                "Source": "Train",
-                            }
-                        )
-                else:
+                if future_points is None or future_points.empty:
                     forecast_value = _load_forecast_value(artifact_paths["forecast"])
-                    if forecast_value is not None:
-                        forecast_date = pd.to_datetime(frame["Date"].max()) + pd.offsets.BDay(
-                            int(asset_config["horizon"])
+                    future_points = _build_single_step_forecast_frame(
+                        frame=frame,
+                        horizon_steps=int(asset_config["horizon"]),
+                        forecast_value=forecast_value,
+                    )
+                future_points = _filter_future_points_for_display(
+                    future_points, int(asset_config["horizon"])
+                )
+                if future_points is not None and not future_points.empty:
+                    trained_plot_frame = _append_future_prediction_path(
+                        trained_plot_frame, future_points
+                    )
+                    future_forecasts.extend(
+                        _future_rows_for_table(
+                            ticker=ticker,
+                            future_points=future_points,
+                            horizon_label=state.get("horizon_label", "1 jour"),
+                            source="Train",
                         )
-                        trained_plot_frame = _append_future_prediction_row(
-                            trained_plot_frame,
-                            forecast_date,
-                            forecast_value,
-                        )
-                        future_forecasts.append(
-                            {
-                                "Actif": ticker,
-                                "Etape": int(asset_config["horizon"]),
-                                "Date prevision": forecast_date.strftime(
-                                    "%Y-%m-%d"
-                                ),
-                                "Prix predit": float(forecast_value),
-                                "Horizon": state.get(
-                                    "horizon_label", "1 jour"
-                                ),
-                                "Source": "Train",
-                            }
-                        )
+                    )
             if trained_plot_frame is not None and not trained_plot_frame.empty:
                 prediction_plots[ticker] = trained_plot_frame
             results.append(
-                {
-                    "Actif": ticker,
-                    "MSE": float(metrics.get("mse", float("nan"))),
-                    "MAE": float(metrics.get("mae", float("nan"))),
-                    "Points utilises": int(len(frame)),
-                    "Fenetre utilisee": int(effective_window),
-                    "Source": "Train",
-                }
+                _build_result_row(
+                    ticker=ticker,
+                    metrics=metrics,
+                    points_count=len(frame),
+                    effective_window=effective_window,
+                    source="Train",
+                )
             )
         except Exception as exc:
             failures.append({"ticker": ticker, "error": str(exc)})
@@ -868,6 +875,11 @@ def train_selected_assets(state):
 
     progress.empty()
     status_line.empty()
+    if legacy_path_assets:
+        st.caption(
+            "Forecast path indisponible pour certains caches legacy: "
+            + ", ".join(sorted(set(legacy_path_assets)))
+        )
     return results, failures, prediction_plots, future_forecasts
 
 
@@ -881,8 +893,15 @@ def render_training_section(state):
         "(fenetre, epochs, modele, horizon) sur les actifs selectionnes. "
         "Les runs sont mis en cache par actif/configuration."
     )
+    asset_count = len(state.get("assets", []))
+    st.caption(f"Actifs a entrainer: {asset_count}")
+    if asset_count >= 15:
+        st.warning(
+            "Beaucoup d'actifs selectionnes: le run peut etre long. "
+            "Reduisez la selection ou les epochs pour un test rapide."
+        )
 
-    if st.button("Entrainer les actifs selectionnes", use_container_width=True):
+    if st.button("Entrainer les actifs selectionnes", width="stretch"):
         if not state["assets"]:
             st.info("Aucun actif selectionne.")
         else:
@@ -923,15 +942,32 @@ def render_training_section(state):
 
     if results:
         df_results = pd.DataFrame(results).sort_values("Actif")
-        st.dataframe(df_results, use_container_width=True)
+        st.dataframe(df_results, width="stretch")
+        if df_results["MAE prix"].isna().any():
+            st.caption(
+                "Certaines lignes proviennent d'un cache legacy: "
+                "relancez l'entrainement pour obtenir les metriques en prix."
+            )
     if failures:
         with st.expander("Erreurs d'entrainement"):
             for item in failures:
                 st.write(f"{item['ticker']}: {item['error']}")
     if prediction_plots:
         st.markdown("#### Reel vs predit")
+        plot_mode = st.radio(
+            "Affichage des courbes",
+            options=["Mixte", "Backtest", "Futur"],
+            horizontal=True,
+            key="training_plot_mode",
+            help=(
+                "Mixte = backtest + futur, Backtest = historique test seulement, "
+                "Futur = projection future seulement."
+            ),
+        )
         for ticker in sorted(prediction_plots.keys()):
-            plot_frame = prediction_plots[ticker]
+            plot_frame = _select_plot_frame_for_mode(
+                prediction_plots[ticker], plot_mode
+            )
             if plot_frame is None or plot_frame.empty:
                 continue
             with st.expander(f"{ticker} - reel vs predit", expanded=False):
@@ -944,13 +980,13 @@ def render_training_section(state):
                         }
                     )
                 )
-                st.line_chart(chart_data, use_container_width=True)
+                st.line_chart(chart_data, width="stretch")
     if future_forecasts:
         st.markdown("#### Donnees predites")
         forecast_df = pd.DataFrame(future_forecasts).sort_values(
             ["Actif", "Etape"]
         )
-        st.dataframe(forecast_df, use_container_width=True)
+        st.dataframe(forecast_df, width="stretch")
 
 
 def render_sidebar():
@@ -1010,14 +1046,14 @@ def render_sidebar():
                 if check_col.button(
                     "Cocher toute la categorie",
                     key=f"check_category_{category_key}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     for asset in category_tickers:
                         st.session_state[f"asset_check_{asset}"] = True
                 if uncheck_col.button(
                     "Decocher toute la categorie",
                     key=f"uncheck_category_{category_key}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     for asset in category_tickers:
                         st.session_state[f"asset_check_{asset}"] = False
@@ -1033,12 +1069,12 @@ def render_sidebar():
         if visible_assets:
             select_col, clear_col = st.columns(2)
             if select_col.button(
-                "Cocher la selection", use_container_width=True
+                "Cocher la selection", width="stretch"
             ):
                 for asset in visible_assets:
                     st.session_state[f"asset_check_{asset}"] = True
             if clear_col.button(
-                "Decocher la selection", use_container_width=True
+                "Decocher la selection", width="stretch"
             ):
                 for asset in visible_assets:
                     st.session_state[f"asset_check_{asset}"] = False
@@ -1110,7 +1146,7 @@ def render_sidebar():
         )
         if "generate_curves" not in st.session_state:
             st.session_state.generate_curves = False
-        if st.button("Generer les courbes", use_container_width=True):
+        if st.button("Generer les courbes", width="stretch"):
             st.session_state.generate_curves = True
 
         st.markdown("---")
@@ -1118,7 +1154,7 @@ def render_sidebar():
         today = datetime.now().strftime("%Y-%m-%d")
         update_key = f"data_updated_{today}"
         force_update = st.checkbox("Ecraser les donnees existantes", value=False)
-        if st.button("Mettre a jour toutes les donnees", use_container_width=True):
+        if st.button("Mettre a jour toutes les donnees", width="stretch"):
             if not selected_assets:
                 st.info("Aucun actif selectionne.")
             else:
@@ -1298,11 +1334,11 @@ def render_predictions_tab(state):
             forecast_df = pd.DataFrame(forecast_rows).sort_values(
                 ["Actif", "Etape"]
             )
-            st.dataframe(forecast_df, use_container_width=True)
+            st.dataframe(forecast_df, width="stretch")
     else:
         with st.expander("Apercu debut de serie"):
-            st.dataframe(combined.head(10), use_container_width=True)
-    st.dataframe(combined.tail(10), use_container_width=True)
+            st.dataframe(combined.head(10), width="stretch")
+    st.dataframe(combined.tail(10), width="stretch")
 
 
 def render_allocation_tab(state):
