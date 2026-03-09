@@ -5,5 +5,5 @@ DEFAULT_CONFIG = {
     "val_size": 0.1,
     "batch_size": 32,
     "epochs": 20,
-    "learning_rate": 1e-3,
+    "learning_rate": 5e-4,
 }
