@@ -15,7 +15,8 @@ except Exception:  # pragma: no cover - optional dependency/runtime network
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "assets"
-RELEVANT_COLUMNS = ["Date", "Adj Close"]
+RELEVANT_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
+DEFAULT_HISTORY_YEARS = 15
 
 
 def ensure_data_dir():
@@ -58,8 +59,12 @@ def normalize_history(data, ticker):
         df = df[df["symbol"].astype(str).str.upper() == ticker.upper()]
 
     rename_map = {
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
         "close": "Close",
         "adjclose": "Adj Close",
+        "volume": "Volume",
     }
     df = df.rename(columns=rename_map)
     df = _extract_date_column(df)
@@ -83,12 +88,17 @@ def normalize_history(data, ticker):
     df = df.dropna(subset=["Date"])
     df = df.sort_values("Date").drop_duplicates("Date")
 
-    if "Adj Close" not in df.columns and "Close" in df.columns:
-        df["Adj Close"] = df["Close"]
-    if "Adj Close" not in df.columns:
-        raise ValueError(f"Missing Adj Close column for {ticker}")
+    if "Close" not in df.columns and "Adj Close" in df.columns:
+        df["Close"] = df["Adj Close"]
+    if "Close" not in df.columns:
+        raise ValueError(f"Missing Close column for {ticker}")
+    for price_col in ["Open", "High", "Low"]:
+        if price_col not in df.columns:
+            df[price_col] = df["Close"]
+    if "Volume" not in df.columns:
+        df["Volume"] = 0.0
 
-    df = df[RELEVANT_COLUMNS].rename(columns={"Adj Close": "Close"})
+    df = df[RELEVANT_COLUMNS]
     return df
 
 
@@ -129,9 +139,26 @@ def _fetch_with_yahooquery(ticker, start=None, end=None):
     return data
 
 
+def resolve_history_bounds(start=None, end=None, default_years=DEFAULT_HISTORY_YEARS):
+    end_ts = (
+        pd.Timestamp(end).normalize()
+        if end is not None
+        else pd.Timestamp.today().normalize()
+    )
+    start_ts = (
+        pd.Timestamp(start).normalize()
+        if start is not None
+        else (end_ts - pd.DateOffset(years=default_years))
+    )
+    if start_ts > end_ts:
+        raise ValueError(
+            f"Invalid date range: start ({start_ts.date()}) is after end ({end_ts.date()})"
+        )
+    return start_ts.strftime("%Y-%m-%d"), end_ts.strftime("%Y-%m-%d")
+
+
 def fetch_asset(ticker, start=None, end=None):
-    start_value = pd.Timestamp(start).strftime("%Y-%m-%d") if start else None
-    end_value = pd.Timestamp(end).strftime("%Y-%m-%d") if end else None
+    start_value, end_value = resolve_history_bounds(start, end)
 
     providers = [
         ("yfinance", _fetch_with_yfinance),

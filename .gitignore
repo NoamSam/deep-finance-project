@@ -1,13 +1,20 @@
 venv/
+
 __pycache__/
+*.py[cod]
 .ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .env
-data/
-*.csv
-*.pkl
-*.h5
-*.json
-
 .DS_Store
-# macOS Finder files
+.vscode/
 
+app/data/
+results/
+
+*.keras
+*.npz
+*.h5
+*.log

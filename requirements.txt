@@ -1,29 +1,9 @@
-# Librairies fondamentales
 numpy
 pandas
-matplotlib
-seaborn
 scikit-learn
+scipy
 yfinance
 yahooquery
-pprintpp
 streamlit
-watchdog
-
-# Deep Learning
 tensorflow
-torch
 keras
-
-# Optimisation et finance
-cvxpy
-backtrader
-QuantStats
-
-# Cloud & utils (AWS / QuantConnect contextuels)
-boto3
-quantconnect
-
-# Dev & notebooks
-notebook
-python-dotenv

@@ -1,19 +1,55 @@
-from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras import layers, losses, models, optimizers
 
 
-def build_lstm(input_shape, learning_rate):
+def build_lstm(
+    input_shape,
+    learning_rate,
+    units1=64,
+    units2=32,
+    dropout=0.2,
+    output_units=1,
+):
     model = models.Sequential(
         [
             layers.Input(shape=input_shape),
-            layers.LSTM(64, return_sequences=False),
-            layers.Dense(32, activation="relu"),
+            layers.LSTM(int(units1), return_sequences=True),
+            layers.Dropout(float(dropout)),
+            layers.LSTM(int(units2), return_sequences=False),
+            layers.Dense(16, activation="relu"),
+            layers.Dense(int(output_units)),
+        ]
+    )
+    model.compile(
+        optimizer=optimizers.Adam(
+            learning_rate=learning_rate,
+            clipnorm=1.0,
+        ),
+        loss=losses.Huber(),
+        metrics=["mae"],
+        run_eagerly=True,
+    )
+    return model
+
+
+def build_lstm_multifeature(input_shape, learning_rate):
+    model = models.Sequential(
+        [
+            layers.Input(shape=input_shape),
+            layers.LSTM(96, return_sequences=True),
+            layers.Dropout(0.2),
+            layers.LSTM(48, return_sequences=False),
+            layers.Dense(24, activation="relu"),
             layers.Dense(1),
         ]
     )
     model.compile(
-        optimizer=optimizers.Adam(learning_rate=learning_rate),
-        loss="mse",
+        optimizer=optimizers.Adam(
+            learning_rate=learning_rate,
+            clipnorm=1.0,
+        ),
+        loss=losses.Huber(),
         metrics=["mae"],
+        run_eagerly=True,
     )
     return model
 
@@ -56,11 +92,30 @@ def build_cnn_lstm(input_shape, learning_rate):
     return model
 
 
-def build_model(model_type, input_shape, learning_rate):
+def build_model(
+    model_type,
+    input_shape,
+    learning_rate,
+    lstm_units1=64,
+    lstm_units2=32,
+    lstm_dropout=0.2,
+    output_units=1,
+):
     if model_type == "lstm":
-        return build_lstm(input_shape, learning_rate)
+        return build_lstm(
+            input_shape,
+            learning_rate,
+            units1=lstm_units1,
+            units2=lstm_units2,
+            dropout=lstm_dropout,
+            output_units=output_units,
+        )
+    if model_type == "lstm_multifeature":
+        return build_lstm_multifeature(input_shape, learning_rate)
     if model_type == "cnn":
         return build_cnn(input_shape, learning_rate)
     if model_type == "cnn_lstm":
         return build_cnn_lstm(input_shape, learning_rate)
-    raise ValueError("model_type must be one of: lstm, cnn, cnn_lstm")
+    raise ValueError(
+        "model_type must be one of: lstm, lstm_multifeature, cnn, cnn_lstm"
+    )
