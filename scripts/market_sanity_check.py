@@ -137,7 +137,7 @@ def run_training_forecast(
     lstm_units2=32,
     lstm_dropout=0.2,
 ):
-    runner_path = Path(__file__).resolve().parent / "train_runner.py"
+    runner_path = Path(__file__).resolve().parent.parent / "app" / "train_runner.py"
     with tempfile.TemporaryDirectory() as tmpdir:
         forecast_path = Path(tmpdir) / "forecast.npz"
         command = [

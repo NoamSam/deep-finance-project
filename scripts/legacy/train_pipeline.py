@@ -4,6 +4,11 @@ from pathlib import Path
 import subprocess
 import sys
 
+if __package__ is None or __package__ == "":
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
 from app.config import DEFAULT_CONFIG
 
 
@@ -18,7 +23,7 @@ class TrainResult:
 
 
 def _build_command(csv_path, model_type, config):
-    runner_path = Path(__file__).resolve().parent / "train_runner.py"
+    runner_path = Path(__file__).resolve().parents[2] / "app" / "train_runner.py"
     return [
         sys.executable,
         str(runner_path),
@@ -53,7 +58,7 @@ def run_training(csv_path, model_type, config=None):
             command,
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent.parent),
+            cwd=str(Path(__file__).resolve().parents[2]),
             timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:

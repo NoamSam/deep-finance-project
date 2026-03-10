@@ -24,7 +24,7 @@ Ouvrir ensuite `http://localhost:8501`.
 ## 2. Lancer un entrainement CLI
 
 ```bash
-venv/bin/python app/main.py \
+venv/bin/python scripts/legacy/main.py \
   --csv app/data/assets/AAPL.csv \
   --model lstm \
   --epochs 1 \
@@ -37,7 +37,7 @@ venv/bin/python app/main.py \
 ## 3. Lancer le backtest marche avec export
 
 ```bash
-venv/bin/python app/market_sanity_check.py \
+venv/bin/python scripts/market_sanity_check.py \
   --assets AAPL MSFT NVDA \
   --start 2023-01-01 \
   --end 2026-02-28 \
@@ -46,7 +46,6 @@ venv/bin/python app/market_sanity_check.py \
   --num-cutoffs 6 \
   --spacing-steps 5 \
   --history-lookback 252 \
-  --drift-lookback 60 \
   --output-dir results/market_check
 ```
 

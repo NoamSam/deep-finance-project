@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 
 .env
+.envrc
 .DS_Store
 .vscode/
 
