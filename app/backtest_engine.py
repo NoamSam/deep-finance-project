@@ -229,6 +229,129 @@ def _prepare_benchmark_series(
     return benchmark_series
 
 
+def apply_benchmark_to_backtest_results(
+    results: dict,
+    benchmark_history: pd.DataFrame | None,
+    benchmark_label: str,
+    horizon_steps: int,
+) -> dict:
+    if not results or "period_returns" not in results:
+        raise ValueError("Backtest results unavailable for benchmark refresh.")
+
+    period_df = results["period_returns"].copy()
+    if period_df is None or period_df.empty:
+        raise ValueError("No period returns available for benchmark refresh.")
+
+    existing_benchmark_label = results.get("benchmark_label")
+    if (
+        existing_benchmark_label
+        and existing_benchmark_label in period_df.columns
+        and existing_benchmark_label not in {"Modele", "Naive", "Equal Weight"}
+        and existing_benchmark_label != benchmark_label
+    ):
+        period_df = period_df.drop(columns=[existing_benchmark_label])
+
+    if benchmark_label and benchmark_history is not None and not benchmark_history.empty:
+        benchmark_index = pd.Index(
+            sorted(
+                set(pd.to_datetime(period_df["Date de rebalance"]))
+                | set(pd.to_datetime(period_df["Date realisee"]))
+            )
+        )
+        benchmark_series = _prepare_benchmark_series(benchmark_history, benchmark_index)
+    else:
+        benchmark_series = None
+
+    benchmark_returns = []
+    for _, row in period_df.iterrows():
+        cutoff_date = pd.to_datetime(row["Date de rebalance"])
+        future_date = pd.to_datetime(row["Date realisee"])
+        benchmark_return = np.nan
+        if benchmark_series is not None:
+            last_benchmark = benchmark_series.loc[cutoff_date]
+            future_benchmark = benchmark_series.loc[future_date]
+            if (
+                pd.notna(last_benchmark)
+                and pd.notna(future_benchmark)
+                and float(last_benchmark) > 0
+            ):
+                benchmark_return = float((future_benchmark / last_benchmark) - 1.0)
+        benchmark_returns.append(benchmark_return)
+
+    if benchmark_label:
+        period_df[benchmark_label] = benchmark_returns
+
+    nav_columns = ["Modele", "Naive", "Equal Weight"]
+    benchmark_available = (
+        benchmark_label in period_df.columns
+        and not period_df[benchmark_label].dropna().empty
+    )
+    if benchmark_available:
+        nav_columns.append(benchmark_label)
+
+    nav_frame = period_df[["Date realisee", *nav_columns]].copy()
+    nav_frame["Date realisee"] = pd.to_datetime(nav_frame["Date realisee"])
+    nav_frame = nav_frame.rename(columns={"Date realisee": "Date"}).sort_values("Date")
+    nav_output = pd.DataFrame({"Date": nav_frame["Date"].to_numpy()})
+    for column in nav_columns:
+        series = nav_frame[column].astype(float).fillna(0.0).to_numpy()
+        nav_output[column] = np.cumprod(1.0 + series)
+
+    drawdown_output = pd.DataFrame({"Date": nav_output["Date"]})
+    for column in nav_columns:
+        drawdown_output[column] = compute_drawdown(
+            nav_output.set_index("Date")[column]
+        ).values
+
+    periods_per_year = 252.0 / max(int(horizon_steps), 1)
+    turnover_map = {
+        "Modele": "Turnover modele",
+        "Naive": "Turnover naive",
+        "Equal Weight": "Turnover equal",
+    }
+    if benchmark_available:
+        turnover_map[benchmark_label] = None
+
+    metric_rows = []
+    for strategy_name in nav_columns:
+        turnover_series = (
+            period_df[turnover_map[strategy_name]]
+            if turnover_map.get(strategy_name) in period_df.columns
+            else None
+        )
+        metrics = compute_performance_metrics(
+            periodic_returns=period_df[strategy_name],
+            turnover_series=turnover_series,
+            periods_per_year=periods_per_year,
+        )
+        metrics["Strategie"] = strategy_name
+        metric_rows.append(metrics)
+
+    metrics_df = pd.DataFrame(metric_rows)[
+        [
+            "Strategie",
+            "Rendement cumule",
+            "Rendement annualise",
+            "Volatilite annualisee",
+            "Sharpe",
+            "Calmar",
+            "Max drawdown",
+            "VaR 95%",
+            "CVaR 95%",
+            "Turnover moyen",
+            "Periodes",
+        ]
+    ]
+
+    updated_results = dict(results)
+    updated_results["period_returns"] = period_df
+    updated_results["nav"] = nav_output
+    updated_results["drawdown"] = drawdown_output
+    updated_results["strategy_metrics"] = metrics_df
+    updated_results["benchmark_label"] = benchmark_label
+    return updated_results
+
+
 def run_market_backtest(
     histories: dict[str, pd.DataFrame],
     model_code: str,
@@ -499,6 +622,16 @@ def run_market_backtest(
     for column in nav_columns:
         series = nav_frame[column].astype(float).fillna(0.0).to_numpy()
         nav_output[column] = np.cumprod(1.0 + series)
+
+    if not period_df.empty:
+        initial_date = pd.to_datetime(period_df["Date de rebalance"]).min()
+        initial_row = {"Date": initial_date}
+        for column in nav_columns:
+            initial_row[column] = 1.0
+        nav_output = pd.concat(
+            [pd.DataFrame([initial_row]), nav_output],
+            ignore_index=True,
+        ).sort_values("Date", kind="stable").reset_index(drop=True)
 
     drawdown_output = pd.DataFrame({"Date": nav_output["Date"]})
     for column in nav_columns:

@@ -18,6 +18,50 @@ BACKTEST_CACHE_VERSION = 1
 BACKTEST_CACHE_DIR = Path(__file__).resolve().parent / "data" / "backtest_cache"
 
 
+def _ensure_nav_starts_at_one(results: dict) -> dict:
+    nav = results.get("nav")
+    period_returns = results.get("period_returns")
+    if not isinstance(nav, pd.DataFrame) or nav.empty:
+        return results
+    if not isinstance(period_returns, pd.DataFrame) or period_returns.empty:
+        return results
+    if "Date" not in nav.columns or "Date de rebalance" not in period_returns.columns:
+        return results
+
+    nav = nav.copy()
+    nav["Date"] = pd.to_datetime(nav["Date"], errors="coerce")
+    nav = nav.dropna(subset=["Date"]).sort_values("Date", kind="stable").reset_index(
+        drop=True
+    )
+    if nav.empty:
+        return results
+
+    nav_columns = [column for column in nav.columns if column != "Date"]
+    if not nav_columns:
+        return results
+
+    first_values = pd.to_numeric(nav.iloc[0][nav_columns], errors="coerce")
+    if (first_values - 1.0).abs().max() < 1e-9:
+        results["nav"] = nav
+        return results
+
+    initial_date = pd.to_datetime(
+        period_returns["Date de rebalance"], errors="coerce"
+    ).dropna()
+    if initial_date.empty:
+        results["nav"] = nav
+        return results
+
+    initial_row = {"Date": initial_date.min()}
+    for column in nav_columns:
+        initial_row[column] = 1.0
+
+    nav = pd.concat([pd.DataFrame([initial_row]), nav], ignore_index=True)
+    nav = nav.sort_values("Date", kind="stable").reset_index(drop=True)
+    results["nav"] = nav
+    return results
+
+
 def _hash_history_map(histories: dict[str, pd.DataFrame]) -> dict[str, str]:
     return {
         ticker: hash_training_frame(frame.copy())
@@ -104,6 +148,7 @@ def load_cached_backtest(cache_key: str) -> dict | None:
             results = pickle.load(handle)
     except Exception:
         return None
+    results = _ensure_nav_starts_at_one(results)
     return {"meta": meta, "results": results, "paths": paths}
 
 
