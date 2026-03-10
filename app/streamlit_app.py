@@ -245,8 +245,7 @@ TABLE_COLUMN_HELP = {
         ("Couverture IC 95%", "Frequence a laquelle le prix reel tombe dans la fourchette IC 95%."),
         ("Beat vs naive", "Part des cas ou le modele fait mieux que la reference Naive."),
         ("Rendement modele", "Rendement moyen projete par le modele."),
-        ("Rendement naive", "Rendement moyen projete par la reference Naive."),
-        ("Rendement reel", "Rendement moyen observe sur la periode cible."),
+        ("Rendement realise", "Rendement moyen observe sur la periode cible."),
     ],
     "allocation_main": [
         ("Poids modele", "Poids recommande par la strategie Modele."),
@@ -1154,30 +1153,6 @@ def _build_executive_summary_payload(results, meta, asset_count, initial_capital
     ]
     model_beats_count = int(sum(valid_verdicts))
     comparison_count = int(len(valid_verdicts))
-    available_reference_returns = [
-        item
-        for item in comparison_results
-        if pd.notna(item["Rendement annualise"])
-    ]
-    best_reference = None
-    if available_reference_returns:
-        best_reference = max(
-            available_reference_returns,
-            key=lambda item: float(item["Rendement annualise"]),
-        )
-    best_reference_name = (
-        best_reference["Strategie"] if best_reference is not None else "Indisponible"
-    )
-    best_reference_return = (
-        _safe_float(best_reference["Rendement annualise"])
-        if best_reference is not None
-        else np.nan
-    )
-    if pd.notna(model_return) and pd.notna(best_reference_return):
-        return_gap_vs_best_reference = model_return - best_reference_return
-    else:
-        return_gap_vs_best_reference = np.nan
-
     forecast_summary = results.get("forecast_summary", pd.DataFrame())
     beat_naive = (
         _safe_float(forecast_summary["beat_naive"].mean())
@@ -1189,16 +1164,9 @@ def _build_executive_summary_payload(results, meta, asset_count, initial_capital
     latest_model_weights = _latest_weights_for_strategy(
         allocation_history, "Modele"
     )
-    top_weights = (
-        ", ".join(
-            f"{ticker} {weight:.0%}"
-            for ticker, weight in latest_model_weights.head(3).items()
-        )
-        if not latest_model_weights.empty
-        else "Indisponible"
-    )
+    displayed_weights = latest_model_weights[latest_model_weights > 0]
     all_weights = (
-        ", ".join(f"{ticker} {weight:.0%}" for ticker, weight in latest_model_weights.items())
+        ", ".join(f"{ticker} {weight:.0%}" for ticker, weight in displayed_weights.items())
         if not latest_model_weights.empty
         else "Indisponible"
     )
@@ -1255,13 +1223,8 @@ def _build_executive_summary_payload(results, meta, asset_count, initial_capital
         "model_max_drawdown": _safe_float(model_metrics.get("Max drawdown")),
         "model_var_95": _safe_float(model_metrics.get("VaR 95%")),
         "model_cvar_95": _safe_float(model_metrics.get("CVaR 95%")),
-        "model_calmar": _safe_float(model_metrics.get("Calmar")),
         "model_turnover": _safe_float(model_metrics.get("Turnover moyen")),
-        "best_reference_name": best_reference_name,
-        "best_reference_return": best_reference_return,
-        "return_gap_vs_best_reference": return_gap_vs_best_reference,
         "beat_naive_rate": beat_naive,
-        "top_weights": top_weights,
         "all_weights": all_weights,
         "comparison_results": pd.DataFrame(comparison_results),
         "ranking": ranking,
@@ -2929,7 +2892,7 @@ def render_backtest_tab(state):
             "ic95_couverture": "Couverture IC 95%",
             "beat_naive": "Beat vs naive",
             "rendement_predit": "Rendement modele",
-            "rendement_reel": "Rendement reel",
+            "rendement_reel": "Rendement realise",
         },
         order=[
             "Actif",
@@ -2940,7 +2903,7 @@ def render_backtest_tab(state):
             "Couverture IC 95%",
             "Beat vs naive",
             "Rendement modele",
-            "Rendement reel",
+            "Rendement realise",
         ],
         number_columns=[
             (
@@ -3061,7 +3024,7 @@ def render_executive_summary_tab(state):
         help=HELP_TEXT["executive_summary"],
     )
     st.caption(
-        "Lecture rapide du dernier backtest: verdict, positionnement du modele, "
+        "Lecture condensee du dernier backtest: verdict, positionnement du modele, "
         "classement des strategies et allocation actuelle."
     )
     results = st.session_state.get("backtest_results")
@@ -3368,7 +3331,7 @@ def render_allocation_tab(state):
     initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
     model_pnl_eur = _safe_float(model_metrics.get("Rendement cumule")) * initial_capital
 
-    st.markdown("### Lecture rapide")
+    st.markdown("### Lecture condensee")
     quick_cols = st.columns(4)
     quick_cols[0].metric(
         "Date de rebalance",
