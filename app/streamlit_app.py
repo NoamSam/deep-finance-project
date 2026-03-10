@@ -6,6 +6,7 @@ import json
 import numpy as np
 import pandas as pd
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 try:
     from app.backtest_engine import apply_benchmark_to_backtest_results, run_market_backtest
@@ -107,6 +108,52 @@ BACKTEST_PERIOD_PRESETS = {
     "Rapide - 4 periodes": 4,
     "Robuste - 10 periodes": 10,
 }
+
+
+def _patch_streamlit_width_compat():
+    if getattr(DeltaGenerator, "_width_compat_patched", False):
+        return
+
+    def make_wrapper(method_name):
+        original = getattr(DeltaGenerator, method_name)
+
+        def wrapped(self, *args, **kwargs):
+            if "width" not in kwargs:
+                return original(self, *args, **kwargs)
+
+            try:
+                return original(self, *args, **kwargs)
+            except TypeError as exc:
+                message = str(exc)
+                if (
+                    "unexpected keyword argument 'width'" not in message
+                    and "cannot be interpreted as an integer" not in message
+                ):
+                    raise
+
+                width_value = kwargs.pop("width", None)
+                if width_value == "stretch":
+                    kwargs["use_container_width"] = True
+                elif width_value == "content":
+                    kwargs["use_container_width"] = False
+                return original(self, *args, **kwargs)
+
+        return wrapped
+
+    for method_name in (
+        "altair_chart",
+        "bar_chart",
+        "button",
+        "dataframe",
+        "download_button",
+        "line_chart",
+    ):
+        setattr(DeltaGenerator, method_name, make_wrapper(method_name))
+
+    DeltaGenerator._width_compat_patched = True
+
+
+_patch_streamlit_width_compat()
 
 
 def _recommended_risk_horizon(horizon_steps: int) -> str:
