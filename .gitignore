@@ -14,6 +14,7 @@ __pycache__/
 
 app/data/
 results/
+scripts/
 
 *.keras
 *.npz
