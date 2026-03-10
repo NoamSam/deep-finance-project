@@ -41,6 +41,12 @@ streamlit run app/streamlit_app.py
 
 Ouvrir ensuite `http://localhost:8501`.
 
+## Premier lancement
+
+- l'application peut telecharger les historiques depuis Yahoo Finance si `app/data/` est vide
+- les fichiers de donnees et les caches locaux sont ensuite recrees automatiquement dans `app/data/`
+- le premier lancement peut donc etre plus lent que les suivants
+
 ## 2. Lancer un entrainement simple
 
 ```bash
