@@ -6,16 +6,37 @@ Projet de prediction multi-actifs avec:
 
 ## Installation
 
+### Option rapide (macOS / Linux)
+
+```bash
+bash setup.sh
+source venv/bin/activate
+```
+
+### Option manuelle (macOS / Linux)
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### Option manuelle (Windows PowerShell)
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
 ## 1. Lancer l'app
 
 ```bash
-venv/bin/streamlit run app/streamlit_app.py
+cd deep-finance-project
+source venv/bin/activate
+streamlit run app/streamlit_app.py
 ```
 
 Ouvrir ensuite `http://localhost:8501`.
@@ -23,7 +44,9 @@ Ouvrir ensuite `http://localhost:8501`.
 ## 2. Lancer un entrainement simple
 
 ```bash
-venv/bin/python app/train_runner.py \
+cd deep-finance-project
+source venv/bin/activate
+python app/train_runner.py \
   --csv app/data/assets/AAPL.csv \
   --model lstm \
   --epochs 1 \
