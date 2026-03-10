@@ -2,8 +2,8 @@ numpy
 pandas
 scikit-learn
 scipy
+altair
 yfinance
 yahooquery
 streamlit
 tensorflow
-keras
