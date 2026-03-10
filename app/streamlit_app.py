@@ -169,6 +169,7 @@ HELP_TEXT = {
     "portfolio_horizon": "Cadre de risque portefeuille utilise pour regler la penalisation du risque dans l'allocation. Il ne change pas l'horizon de prediction du modele ni la duree de detention backtestee. Son effet peut rester limite si le signal est deja tres concentre ou si le poids max par actif bloque deja l'optimisation.",
     "max_weight": "Poids maximum autorise sur un actif pour limiter la concentration.",
     "transaction_cost_bps": "Frais appliques a chaque rebalance. 0 bps = 0%, 10 bps = 0,10%.",
+    "initial_capital": "Capital de depart utilise pour exprimer le PnL cumule en euros. N'affecte ni l'entrainement ni l'optimisation.",
     "benchmark": "Indice ou ETF de reference pour comparer la strategie.",
     "run_backtest": "Lance un backtest rolling a partir de la configuration actuelle.",
     "strategy_metrics": "Synthese risque/rendement de chaque strategie sur les periodes testees.",
@@ -192,8 +193,7 @@ HELP_TEXT = {
     "max_weight_metric": "Poids de la position la plus importante du portefeuille.",
     "effective_positions": "Mesure de diversification basee sur 1 / somme des poids au carre.",
     "top3_weight_share": "Part du portefeuille concentree sur les trois plus grosses positions.",
-    "concentration_hhi": "Indice de concentration Herfindahl-Hirschman. Plus il est eleve, plus le portefeuille est concentre.",
-    "concentration_label": "Lecture synthétique du niveau de concentration du portefeuille.",
+    "concentration_label": "Lecture synthetique du niveau de concentration du portefeuille. `Elevee` si poids max >= 45% ou top 3 >= 80% ou positions effectives < 2.5. `Moyenne` si poids max >= 35% ou top 3 >= 65% ou positions effectives < 4. `Faible` sinon.",
     "weight_chart": "Repartition des poids du portefeuille modele sur la derniere date de rebalance.",
     "risk_contribution_chart": "Visualise la part relative du risque portefeuille portee par chaque actif.",
     "overweights": "Actifs les plus surponderes par rapport a un portefeuille equipondere.",
@@ -227,6 +227,7 @@ TABLE_COLUMN_HELP = {
     "strategy_metrics": [
         ("Rendement annualise", "Performance annualisee estimee a partir des periodes du backtest."),
         ("Rendement cumule", "Performance totale cumulee sur la fenetre de backtest."),
+        ("PnL cumule (€)", "Gain ou perte cumule(e) en euros sur la base du capital initial choisi."),
         ("Volatilite annualisee", "Volatilite des rendements, annualisee."),
         ("Sharpe", "Rendement annualise rapporte a la volatilite. Plus haut est meilleur."),
         ("Max drawdown", "Pire baisse observee depuis un plus haut historique."),
@@ -850,6 +851,7 @@ def _prepare_table_display(
     order=None,
     percent_columns=None,
     number_columns=None,
+    keep_remaining=True,
 ):
     output = frame.copy()
     if rename_map:
@@ -866,8 +868,11 @@ def _prepare_table_display(
             )
     if order:
         ordered = [column for column in order if column in output.columns]
-        remaining = [column for column in output.columns if column not in ordered]
-        output = output[ordered + remaining]
+        if keep_remaining:
+            remaining = [column for column in output.columns if column not in ordered]
+            output = output[ordered + remaining]
+        else:
+            output = output[ordered]
     return output
 
 
@@ -1036,11 +1041,50 @@ def _render_period_return_chart(period_returns_frame, benchmark_label):
     st.altair_chart(chart, width="stretch")
 
 
+def _render_weight_pie_chart(weight_frame, value_column, label_column="Actif"):
+    if weight_frame is None or weight_frame.empty or value_column not in weight_frame.columns:
+        st.info("Aucune serie disponible.")
+        return
+
+    chart_frame = weight_frame[[label_column, value_column]].copy()
+    chart_frame[value_column] = pd.to_numeric(chart_frame[value_column], errors="coerce")
+    chart_frame = chart_frame.dropna(subset=[value_column])
+    chart_frame = chart_frame[chart_frame[value_column] > 0]
+    if chart_frame.empty:
+        st.info("Aucune serie disponible.")
+        return
+
+    chart_frame = chart_frame.sort_values(value_column, ascending=False)
+    chart = (
+        alt.Chart(chart_frame)
+        .mark_arc(innerRadius=36)
+        .encode(
+            theta=alt.Theta(f"{value_column}:Q"),
+            color=alt.Color(f"{label_column}:N", title=None),
+            tooltip=[
+                alt.Tooltip(f"{label_column}:N", title="Actif"),
+                alt.Tooltip(f"{value_column}:Q", title="Poids", format=".2%"),
+            ],
+        )
+        .properties(height=320)
+    )
+    st.altair_chart(chart, width="stretch")
+
+
 def _safe_float(value):
     try:
         return float(value)
     except Exception:
         return np.nan
+
+
+def _format_currency_eur(value):
+    if pd.isna(value):
+        return "n/a"
+    value = float(value)
+    if abs(value) >= 1000:
+        return f"{value:,.0f} €".replace(",", " ")
+    return f"{value:,.2f} €".replace(",", " ")
 
 
 def _render_table_help(help_key, title="Definitions des colonnes"):
@@ -1065,7 +1109,7 @@ def _latest_weights_for_strategy(allocation_history, strategy_name):
     return _parse_weights_text(latest_rows.iloc[-1]["Poids"])
 
 
-def _build_executive_summary_payload(results, meta, asset_count):
+def _build_executive_summary_payload(results, meta, asset_count, initial_capital):
     strategy_metrics = results.get("strategy_metrics", pd.DataFrame())
     metric_lookup = _strategy_metric_lookup(strategy_metrics)
     model_metrics = metric_lookup.get("Modele", {})
@@ -1153,6 +1197,11 @@ def _build_executive_summary_payload(results, meta, asset_count):
         if not latest_model_weights.empty
         else "Indisponible"
     )
+    all_weights = (
+        ", ".join(f"{ticker} {weight:.0%}" for ticker, weight in latest_model_weights.items())
+        if not latest_model_weights.empty
+        else "Indisponible"
+    )
 
     verdict_level = "warning"
     verdict_label = "Sous-performance"
@@ -1199,6 +1248,8 @@ def _build_executive_summary_payload(results, meta, asset_count):
         "model_beats_count": model_beats_count,
         "comparison_count": comparison_count,
         "model_cumulative_return": _safe_float(model_metrics.get("Rendement cumule")),
+        "model_pnl_eur": _safe_float(model_metrics.get("Rendement cumule"))
+        * float(initial_capital),
         "model_annualized_return": model_return,
         "model_sharpe": _safe_float(model_metrics.get("Sharpe")),
         "model_max_drawdown": _safe_float(model_metrics.get("Max drawdown")),
@@ -1211,6 +1262,7 @@ def _build_executive_summary_payload(results, meta, asset_count):
         "return_gap_vs_best_reference": return_gap_vs_best_reference,
         "beat_naive_rate": beat_naive,
         "top_weights": top_weights,
+        "all_weights": all_weights,
         "comparison_results": pd.DataFrame(comparison_results),
         "ranking": ranking,
     }
@@ -1221,12 +1273,15 @@ def _format_strategy_comparison_value(value, kind):
         return "n/a"
     if kind == "pct":
         return f"{value:.2%}"
+    if kind == "eur":
+        return _format_currency_eur(value)
     return f"{value:.2f}"
 
 
-def _build_strategy_comparison_frame(metric_lookup, strategy_a, strategy_b):
+def _build_strategy_comparison_frame(metric_lookup, strategy_a, strategy_b, initial_capital):
     metric_specs = [
         ("Rendement cumule", "pct"),
+        ("PnL cumule (€)", "eur"),
         ("Rendement annualise", "pct"),
         ("Volatilite annualisee", "pct"),
         ("Sharpe", "num"),
@@ -1240,8 +1295,12 @@ def _build_strategy_comparison_frame(metric_lookup, strategy_a, strategy_b):
     strategy_a_metrics = metric_lookup.get(strategy_a, {})
     strategy_b_metrics = metric_lookup.get(strategy_b, {})
     for metric_name, kind in metric_specs:
-        value_a = _safe_float(strategy_a_metrics.get(metric_name))
-        value_b = _safe_float(strategy_b_metrics.get(metric_name))
+        if metric_name == "PnL cumule (€)":
+            value_a = _safe_float(strategy_a_metrics.get("Rendement cumule")) * float(initial_capital)
+            value_b = _safe_float(strategy_b_metrics.get("Rendement cumule")) * float(initial_capital)
+        else:
+            value_a = _safe_float(strategy_a_metrics.get(metric_name))
+            value_b = _safe_float(strategy_b_metrics.get(metric_name))
         delta = value_a - value_b if pd.notna(value_a) and pd.notna(value_b) else np.nan
         rows.append(
             {
@@ -1287,31 +1346,22 @@ def _top_weight_share(weights, top_n=3):
     return float(weights.sort_values(ascending=False).head(int(top_n)).sum())
 
 
-def _concentration_hhi(weights):
-    if weights.empty:
-        return 0.0
-    return float((weights**2).sum())
-
-
 def _concentration_label(weights):
     if weights.empty:
         return "n/a"
     max_weight = float(weights.max())
     top3_share = _top_weight_share(weights, top_n=3)
     effective_positions = _effective_position_count(weights)
-    hhi = _concentration_hhi(weights)
     if (
         max_weight >= 0.45
         or top3_share >= 0.80
         or effective_positions < 2.5
-        or hhi >= 0.30
     ):
         return "Elevee"
     if (
         max_weight >= 0.35
         or top3_share >= 0.65
         or effective_positions < 4.0
-        or hhi >= 0.20
     ):
         return "Moyenne"
     return "Faible"
@@ -1420,11 +1470,6 @@ def _backtest_run_quality(results, meta):
         if not latest_model_weights.empty
         else np.nan
     )
-    concentration_hhi = (
-        _concentration_hhi(latest_model_weights)
-        if not latest_model_weights.empty
-        else np.nan
-    )
     concentration_label = (
         _concentration_label(latest_model_weights)
         if not latest_model_weights.empty
@@ -1435,10 +1480,6 @@ def _backtest_run_quality(results, meta):
     turnover = _safe_float(model_metrics.get("Turnover moyen"))
 
     warnings = []
-    if period_count < 6:
-        warnings.append(
-            "Run fragile: moins de 6 periodes, les metriques annualisees restent volatiles."
-        )
     if pd.notna(turnover) and turnover >= 0.30:
         warnings.append(
             "Turnover eleve: les performances sont plus sensibles aux frais de transaction."
@@ -1446,10 +1487,6 @@ def _backtest_run_quality(results, meta):
     if pd.notna(max_weight) and max_weight >= 0.45:
         warnings.append(
             "Portefeuille concentre: une position porte une part importante du risque."
-        )
-    elif pd.notna(top3_share) and top3_share >= 0.75:
-        warnings.append(
-            "Portefeuille concentre: les trois premieres positions portent l'essentiel de l'allocation."
         )
     elif pd.notna(effective_positions) and effective_positions < 3:
         warnings.append(
@@ -1462,7 +1499,6 @@ def _backtest_run_quality(results, meta):
         "max_weight": max_weight,
         "effective_positions": effective_positions,
         "top3_share": top3_share,
-        "concentration_hhi": concentration_hhi,
         "concentration_label": concentration_label,
         "turnover": turnover,
         "warnings": warnings,
@@ -2368,8 +2404,8 @@ def render_backtest_tab(state):
     )
 
     with st.expander("Parametres du backtest", expanded=True):
-        preset_cols = st.columns(1)
-        with preset_cols[0]:
+        top_row = st.columns([1.15, 1.15, 0.85])
+        with top_row[0]:
             period_preset_label = st.selectbox(
                 "Profondeur du backtest",
                 options=list(BACKTEST_PERIOD_PRESETS.keys()),
@@ -2382,8 +2418,27 @@ def render_backtest_tab(state):
                 "_backtest_num_periods_reco",
                 BACKTEST_PERIOD_PRESETS[period_preset_label],
             )
-        form_cols = st.columns(2)
-        with form_cols[0]:
+        with top_row[1]:
+            benchmark_label = st.selectbox(
+                "Benchmark",
+                options=list(BACKTEST_BENCHMARKS.keys()),
+                index=1,
+                key="backtest_benchmark_label",
+                help=HELP_TEXT["benchmark"],
+            )
+        with top_row[2]:
+            initial_capital = st.number_input(
+                "Capital initial (€)",
+                min_value=100.0,
+                max_value=10_000_000.0,
+                value=10_000.0,
+                step=1_000.0,
+                key="backtest_initial_capital",
+                help=HELP_TEXT["initial_capital"],
+            )
+
+        middle_row = st.columns(3)
+        with middle_row[0]:
             num_periods = int(st.session_state.get("backtest_num_periods", 4))
             history_lookback = st.selectbox(
                 "Historique pour le risque",
@@ -2392,25 +2447,7 @@ def render_backtest_tab(state):
                 key="backtest_history_lookback",
                 help=HELP_TEXT["history_lookback"],
             )
-            transaction_cost_bps = st.number_input(
-                "Frais de transaction (bps)",
-                min_value=0.0,
-                max_value=100.0,
-                value=0.0,
-                step=1.0,
-                key="backtest_transaction_cost_bps",
-                help=HELP_TEXT["transaction_cost_bps"],
-            )
-            max_weight = st.slider(
-                "Poids max par actif",
-                min_value=0.20,
-                max_value=1.00,
-                value=0.35,
-                step=0.05,
-                key="backtest_max_weight",
-                help=HELP_TEXT["max_weight"],
-            )
-        with form_cols[1]:
+        with middle_row[1]:
             risk_profile = st.selectbox(
                 "Profil risque",
                 options=BACKTEST_RISK_PROFILES,
@@ -2421,6 +2458,7 @@ def render_backtest_tab(state):
                 ),
                 help=HELP_TEXT["risk_profile"],
             )
+        with middle_row[2]:
             portfolio_horizon = st.selectbox(
                 "Cadre de risque portefeuille",
                 options=BACKTEST_PORTFOLIO_HORIZONS,
@@ -2431,12 +2469,27 @@ def render_backtest_tab(state):
                 ),
                 help=HELP_TEXT["portfolio_horizon"],
             )
-            benchmark_label = st.selectbox(
-                "Benchmark",
-                options=list(BACKTEST_BENCHMARKS.keys()),
-                index=1,
-                key="backtest_benchmark_label",
-                help=HELP_TEXT["benchmark"],
+
+        bottom_row = st.columns([1.0, 1.0])
+        with bottom_row[0]:
+            transaction_cost_bps = st.number_input(
+                "Frais de transaction (bps)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=1.0,
+                key="backtest_transaction_cost_bps",
+                help=HELP_TEXT["transaction_cost_bps"],
+            )
+        with bottom_row[1]:
+            max_weight = st.slider(
+                "Poids max par actif",
+                min_value=0.20,
+                max_value=1.00,
+                value=0.35,
+                step=0.05,
+                key="backtest_max_weight",
+                help=HELP_TEXT["max_weight"],
             )
     st.caption(
         "Chaque periode correspond a une decision d'investissement historique simulee "
@@ -2775,20 +2828,22 @@ def render_backtest_tab(state):
     st.caption(
         "Concentration du portefeuille modele: "
         f"`{run_quality['concentration_label']}`"
-        + (
-            f" | HHI {run_quality['concentration_hhi']:.2f}"
-            if pd.notna(run_quality["concentration_hhi"])
-            else ""
-        )
     )
     for warning in run_quality["warnings"]:
         st.warning(warning)
 
+    initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
+    strategy_metrics_source = results["strategy_metrics"].copy()
+    strategy_metrics_source["PnL cumule (€)"] = (
+        pd.to_numeric(strategy_metrics_source["Rendement cumule"], errors="coerce")
+        * initial_capital
+    )
     strategy_metrics = _prepare_table_display(
-        results["strategy_metrics"].sort_values("Rendement cumule", ascending=False),
+        strategy_metrics_source.sort_values("Rendement cumule", ascending=False),
         order=[
             "Strategie",
             "Rendement cumule",
+            "PnL cumule (€)",
             "Rendement annualise",
             "Volatilite annualisee",
             "Sharpe",
@@ -2808,18 +2863,22 @@ def render_backtest_tab(state):
             "CVaR 95%",
             "Turnover moyen",
         ],
-        number_columns=[(["Sharpe", "Calmar"], 2, "")],
+        number_columns=[
+            (["PnL cumule (€)"], 0, " €"),
+            (["Sharpe", "Calmar"], 2, ""),
+        ],
     )
     st.markdown("### Scoreboard des strategies")
     st.dataframe(strategy_metrics, width="stretch", hide_index=True)
     _render_table_help("strategy_metrics")
 
-    headline_metrics = results["strategy_metrics"].copy()
+    headline_metrics = strategy_metrics_source.copy()
     headline_metrics = _prepare_table_display(
         headline_metrics.sort_values("Rendement cumule", ascending=False),
         order=[
             "Strategie",
             "Rendement cumule",
+            "PnL cumule (€)",
             "Max drawdown",
             "VaR 95%",
             "Turnover moyen",
@@ -2831,11 +2890,10 @@ def render_backtest_tab(state):
             "VaR 95%",
             "Turnover moyen",
         ],
+        number_columns=[(["PnL cumule (€)"], 0, " €")],
+        keep_remaining=False,
     )
-    st.markdown("### Lecture portefeuille prioritaire")
-    st.caption(
-        "Lecture la plus defendable pour la demo: rendement cumule, drawdown, VaR et turnover."
-    )
+    st.markdown("### Lecture condensee")
     st.dataframe(headline_metrics, width="stretch", hide_index=True)
 
     nav_chart = results["nav"].set_index("Date")
@@ -2852,16 +2910,12 @@ def render_backtest_tab(state):
     )
 
     st.markdown("### Qualite du signal par actif")
-    st.caption(
-        "Largeur IC 95% et couverture IC 95% resumant l'incertitude des previsions et la frequence a laquelle le prix reel tombe dans cet intervalle."
-    )
     forecast_summary = _format_percent_columns(
         results["forecast_summary"],
         [
             "ic95_couverture",
             "beat_naive",
             "rendement_predit",
-            "rendement_naive",
             "rendement_reel",
         ],
     )
@@ -2875,7 +2929,6 @@ def render_backtest_tab(state):
             "ic95_couverture": "Couverture IC 95%",
             "beat_naive": "Beat vs naive",
             "rendement_predit": "Rendement modele",
-            "rendement_naive": "Rendement naive",
             "rendement_reel": "Rendement reel",
         },
         order=[
@@ -2887,7 +2940,6 @@ def render_backtest_tab(state):
             "Couverture IC 95%",
             "Beat vs naive",
             "Rendement modele",
-            "Rendement naive",
             "Rendement reel",
         ],
         number_columns=[
@@ -3018,10 +3070,12 @@ def render_executive_summary_tab(state):
         st.info("Lancez d'abord un backtest pour generer la synthese decisionnelle.")
         return
 
+    initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
     summary = _build_executive_summary_payload(
         results=results,
         meta=meta,
         asset_count=len(state.get("assets", [])),
+        initial_capital=initial_capital,
     )
     with st.container(border=True):
         if summary["verdict_level"] == "success":
@@ -3046,9 +3100,9 @@ def render_executive_summary_tab(state):
             help="Nombre de decisions historiques simulees dans le backtest courant.",
         )
         verdict_cols[2].metric(
-            "Actifs testes",
-            summary["asset_count"],
-            help="Nombre d'actifs inclus dans le dernier backtest.",
+            "PnL modele (€)",
+            _format_currency_eur(summary["model_pnl_eur"]),
+            help=f"PnL cumule du modele sur une base de {int(initial_capital):,} €.".replace(",", " "),
         )
         verdict_cols[3].metric(
             "Rendement cumule modele",
@@ -3096,23 +3150,35 @@ def render_executive_summary_tab(state):
         help=HELP_TEXT["beat_rate"],
     )
     secondary_cols[1].metric(
+        "Actifs testes",
+        summary["asset_count"],
+        help="Nombre d'actifs inclus dans le dernier backtest.",
+    )
+    secondary_cols[2].metric(
         "Meilleure strategie",
         summary["best_strategy"],
         help=HELP_TEXT["best_strategy"],
     )
-    secondary_cols[2].metric(
+    secondary_cols[3].metric(
         "Rendement annualise modele",
         f"{summary['model_annualized_return']:.2%}"
         if pd.notna(summary["model_annualized_return"])
         else "n/a",
         help=HELP_TEXT["annualized_return"],
     )
-    secondary_cols[3].metric(
+
+    tertiary_cols = st.columns(2)
+    tertiary_cols[0].metric(
         "Sharpe modele",
         f"{summary['model_sharpe']:.2f}"
         if pd.notna(summary["model_sharpe"])
         else "n/a",
         help=HELP_TEXT["sharpe"],
+    )
+    tertiary_cols[1].metric(
+        "Capital initial",
+        _format_currency_eur(initial_capital),
+        help=HELP_TEXT["initial_capital"],
     )
 
     st.markdown("### Conclusion")
@@ -3121,7 +3187,7 @@ def render_executive_summary_tab(state):
         f"horizon {meta['horizon_label']} ({meta['horizon_steps']} pas) | "
         f"epochs {meta['epochs']} | benchmark {meta['benchmark_label']}"
     )
-    st.write(f"Allocation actuelle: {summary['top_weights']}")
+    st.write(f"Allocation actuelle: {summary['all_weights']}")
 
     ranking_frame = summary["ranking"].copy()
     if not ranking_frame.empty and len(ranking_frame) >= 2:
@@ -3190,6 +3256,7 @@ def render_executive_summary_tab(state):
             _strategy_metric_lookup(results.get("strategy_metrics", pd.DataFrame())),
             strategy_a,
             strategy_b,
+            initial_capital,
         )
         st.dataframe(comparison_metrics, width="stretch", hide_index=True)
 
@@ -3290,7 +3357,6 @@ def render_allocation_tab(state):
     effective_positions = _effective_position_count(model_weights)
     max_weight = float(model_weights.max())
     top3_share = _top_weight_share(model_weights, top_n=3)
-    concentration_hhi = _concentration_hhi(model_weights)
     concentration_label = _concentration_label(model_weights)
 
     metric_lookup = (
@@ -3299,6 +3365,8 @@ def render_allocation_tab(state):
         .to_dict(orient="index")
     )
     model_metrics = metric_lookup.get("Modele", {})
+    initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
+    model_pnl_eur = _safe_float(model_metrics.get("Rendement cumule")) * initial_capital
 
     st.markdown("### Lecture rapide")
     quick_cols = st.columns(4)
@@ -3331,58 +3399,48 @@ def render_allocation_tab(state):
         help="Performance totale observee sur la fenetre de backtest.",
     )
     perf_cols[1].metric(
+        "PnL cumule (€)",
+        _format_currency_eur(model_pnl_eur),
+        help=f"Gain ou perte du portefeuille modele sur une base de {int(initial_capital):,} €.".replace(",", " "),
+    )
+    perf_cols[2].metric(
         "Max drawdown",
         f"{float(model_metrics.get('Max drawdown', np.nan)):.2%}",
         help=HELP_TEXT["max_drawdown"],
     )
-    perf_cols[2].metric(
+    perf_cols[3].metric(
         "VaR 95%",
         f"{float(model_metrics.get('VaR 95%', np.nan)):.2%}",
         help=HELP_TEXT["var_95"],
     )
-    perf_cols[3].metric(
+
+    advanced_cols = st.columns(4)
+    advanced_cols[0].metric(
         "Turnover moyen",
         f"{float(model_metrics.get('Turnover moyen', np.nan)):.2%}",
         help=HELP_TEXT["turnover"],
     )
-
-    advanced_cols = st.columns(4)
-    advanced_cols[0].metric(
+    advanced_cols[1].metric(
         "Rendement annualise",
         f"{float(model_metrics.get('Rendement annualise', np.nan)):.2%}",
         help=HELP_TEXT["annualized_return"],
     )
-    advanced_cols[1].metric(
+    advanced_cols[2].metric(
         "Sharpe",
         f"{float(model_metrics.get('Sharpe', np.nan)):.2f}",
         help=HELP_TEXT["sharpe"],
     )
-    advanced_cols[2].metric(
+    advanced_cols[3].metric(
         "CVaR 95%",
         f"{float(model_metrics.get('CVaR 95%', np.nan)):.2%}",
         help=HELP_TEXT["cvar_95"],
     )
-    advanced_cols[3].metric(
+
+    structure_cols = st.columns(1)
+    structure_cols[0].metric(
         "Calmar",
         f"{float(model_metrics.get('Calmar', np.nan)):.2f}",
         help=HELP_TEXT["calmar"],
-    )
-
-    structure_cols = st.columns(3)
-    structure_cols[0].metric(
-        "Poids max observe",
-        f"{max_weight:.1%}",
-        help=HELP_TEXT["max_weight_metric"],
-    )
-    structure_cols[1].metric(
-        "Positions effectives",
-        f"{effective_positions:.2f}",
-        help=HELP_TEXT["effective_positions"],
-    )
-    structure_cols[2].metric(
-        "HHI concentration",
-        f"{concentration_hhi:.2f}",
-        help=HELP_TEXT["concentration_hhi"],
     )
 
     if concentration_label == "Elevee" or max_weight >= 0.45:
@@ -3451,9 +3509,7 @@ def render_allocation_tab(state):
 
     chart_data = weight_frame.set_index("Actif")[["Poids modele"]]
     chart_cols = st.columns(2)
-    with chart_cols[0]:
-        st.markdown("### Repartition cible du portefeuille")
-        st.bar_chart(chart_data, width="stretch")
+    show_weight_pie = False
     if "Contribution risque" in weight_frame.columns:
         risk_chart = (
             weight_frame[["Actif", "Contribution risque"]]
@@ -3461,11 +3517,27 @@ def render_allocation_tab(state):
             .set_index("Actif")
         )
         with chart_cols[1]:
-            st.markdown("### Contribution au risque")
-            st.caption(
-                "Compare le poids economique d'un actif a sa part dans le risque total."
-            )
-            st.bar_chart(risk_chart, width="stretch")
+            title_cols = st.columns([0.72, 0.28])
+            with title_cols[0]:
+                st.markdown("### Contribution au risque")
+            with title_cols[1]:
+                show_weight_pie = st.toggle(
+                    "Cammembert",
+                    key="allocation_weight_pie",
+                    help="Affiche la repartition cible et la contribution au risque sous forme de camembert.",
+                )
+            if show_weight_pie:
+                _render_weight_pie_chart(weight_frame, "Contribution risque")
+            else:
+                st.bar_chart(risk_chart, width="stretch")
+    with chart_cols[0]:
+        st.markdown("### Repartition cible du portefeuille")
+        if "Contribution risque" in weight_frame.columns:
+            st.caption(" ")
+        if show_weight_pie:
+            _render_weight_pie_chart(weight_frame, "Poids modele")
+        else:
+            st.bar_chart(chart_data, width="stretch")
 
     display_frame = _format_percent_columns(
         weight_frame,

@@ -623,6 +623,16 @@ def run_market_backtest(
         series = nav_frame[column].astype(float).fillna(0.0).to_numpy()
         nav_output[column] = np.cumprod(1.0 + series)
 
+    if not period_df.empty:
+        initial_date = pd.to_datetime(period_df["Date de rebalance"]).min()
+        initial_row = {"Date": initial_date}
+        for column in nav_columns:
+            initial_row[column] = 1.0
+        nav_output = pd.concat(
+            [pd.DataFrame([initial_row]), nav_output],
+            ignore_index=True,
+        ).sort_values("Date", kind="stable").reset_index(drop=True)
+
     drawdown_output = pd.DataFrame({"Date": nav_output["Date"]})
     for column in nav_columns:
         drawdown_output[column] = compute_drawdown(
