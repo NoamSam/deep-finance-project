@@ -2,6 +2,7 @@ import altair as alt
 from datetime import datetime
 from pathlib import Path
 import json
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -21,8 +22,6 @@ try:
         DEFAULT_LSTM_UNITS1,
         DEFAULT_LSTM_UNITS2,
         TRAINING_SUBPROCESS_TIMEOUT_SEC,
-        load_latest_training_cache,
-        peek_training_cache,
         resolve_training_cache,
     )
     from app.us_market_features import (
@@ -44,8 +43,6 @@ except ModuleNotFoundError:
         DEFAULT_LSTM_UNITS1,
         DEFAULT_LSTM_UNITS2,
         TRAINING_SUBPROCESS_TIMEOUT_SEC,
-        load_latest_training_cache,
-        peek_training_cache,
         resolve_training_cache,
     )
     from us_market_features import (
@@ -66,7 +63,7 @@ MIN_WINDOW_SIZE = 5
 DEFAULT_TEST_SIZE = 0.2
 DEFAULT_VAL_SIZE = 0.1
 MAX_DEFAULT_PLOT_ASSETS = 12
-DEFAULT_MAX_PLOT_POINTS = 1200
+DEFAULT_MAX_PLOT_POINTS = 200
 PLOT_RESAMPLE_RULES = {
     "Journalier": "D",
     "Hebdomadaire": "W-FRI",
@@ -191,6 +188,19 @@ def _sync_numeric_widget_with_recommendation(
     st.session_state[tracker_key] = recommended_value
 
 
+def _format_elapsed_seconds(elapsed_seconds: float) -> str:
+    if 0 < elapsed_seconds < 1:
+        return "<1s"
+    total_seconds = max(0, int(round(elapsed_seconds)))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 HELP_TEXT = {
     "asset_categories": "Regroupe les actifs par univers pour accelerer la selection.",
     "start_date": "Date minimale des donnees chargees et utilisees pour les graphes, le training et le backtest.",
@@ -199,8 +209,7 @@ HELP_TEXT = {
     "epochs": "Nombre maximum de passages sur les donnees d'entrainement.",
     "model_type": "Architecture utilisee pour produire le signal de prediction. LSTM = single-feature, LSTM US multi-features = OHLCV + SPY/QQQ/VIX.",
     "horizon": "Nombre de pas de marche vises par la prediction. 1 mois = environ 21 seances.",
-    "force_retrain": "Ignore le cache local et relance un entrainement complet pour chaque actif.",
-    "generate_curves": "Charge les donnees historiques et active les graphes de prix pour les actifs selectionnes.",
+    "generate_curves": "Charge les donnees historiques et affiche les graphes pour les actifs selectionnes.",
     "update_assets": "Telecharge ou rafraichit les historiques Yahoo Finance des actifs selectionnes.",
     "plot_assets": "Actifs affiches sur le graphe de prix historique.",
     "plot_resolution": "Frequence de re-echantillonnage du graphe pour limiter la charge visuelle.",
@@ -316,7 +325,7 @@ TABLE_COLUMN_HELP = {
 }
 
 ASSET_CATEGORIES = {
-    "Beautiful Seven (US)": [
+    "Magnificent Seven (US)": [
         "AAPL",
         "AMZN",
         "GOOG",
@@ -942,7 +951,7 @@ def _render_recommended_settings_expander(section="general"):
     content_map = {
         "predictions": (
             "Recommandations pour generer les signaux sur les actifs US "
-            "(Beautiful Seven).",
+            "(Magnificent Seven).",
             "- Modele recommande: `LSTM`\n"
             "- Fenetre recommandee: `120`\n"
             "- Epochs recommandes: `10`\n"
@@ -951,7 +960,7 @@ def _render_recommended_settings_expander(section="general"):
         ),
         "backtest": (
             "Configuration recommandee pour comparer les strategies sans alourdir le run.",
-            "- Univers recommande: `Beautiful Seven`\n"
+            "- Univers recommande: `Magnificent Seven`\n"
             "- Modele recommande: `LSTM`\n"
             "- Fenetre `120`, epochs `10`, horizon `5 jours`\n"
             "- `2 a 4` periodes pour un run rapide, puis `6+` pour consolider",
@@ -971,7 +980,7 @@ def _render_recommended_settings_expander(section="general"):
         ),
         "general": (
             "Recommandations actuelles issues des benchmarks menes sur les actifs US "
-            "(Beautiful Seven).",
+            "(Magnificent Seven).",
             "- Modele recommande: `LSTM`\n"
             "- Fenetre recommandee: `120`\n"
             "- Epochs recommandes: `10`\n"
@@ -1598,11 +1607,10 @@ def _apply_backtest_alignment(plot_frame, alignment_mode):
     return aligned.sort_values("Date")
 
 
-def train_selected_assets(state, cache_only=False):
+def train_selected_assets(state, force_retrain=False):
     model_code = MODEL_TYPE_MAP[state["model_type"]]
     use_us_multifeature = model_code == "lstm_multifeature"
     requested_window_size = int(state["window_size"])
-    force_retrain = bool(state.get("force_retrain", False))
     horizon_steps = int(state.get("horizon_steps", 1))
     base_config = {
         "epochs": int(state["epochs"]),
@@ -1629,6 +1637,8 @@ def train_selected_assets(state, cache_only=False):
     status_line = st.empty()
     legacy_path_assets = []
     factor_histories = None
+    actual_start_date = None
+    actual_end_date = None
 
     if use_us_multifeature:
         factor_cache_token = tuple(
@@ -1658,6 +1668,14 @@ def train_selected_assets(state, cache_only=False):
                     state["end_date"],
                     get_asset_cache_token(ticker),
                 )
+            if not frame.empty:
+                frame_dates = pd.to_datetime(frame["Date"])
+                frame_start = frame_dates.min()
+                frame_end = frame_dates.max()
+                if actual_start_date is None or frame_start < actual_start_date:
+                    actual_start_date = frame_start
+                if actual_end_date is None or frame_end > actual_end_date:
+                    actual_end_date = frame_end
             effective_window = _effective_window_size(
                 total_points=len(frame),
                 requested_window=requested_window_size,
@@ -1693,43 +1711,21 @@ def train_selected_assets(state, cache_only=False):
                 asset_frame=frame,
                 factor_histories=factor_histories,
             )
-            if cache_only:
-                cache_result = peek_training_cache(
-                    ticker=ticker,
-                    model_code=model_code,
-                    config=asset_config,
-                    training_frame=training_frame,
-                    required_artifacts=("model", "scaler", "eval", "forecast"),
-                )
-                if cache_result is None:
-                    cache_result = load_latest_training_cache(
-                        ticker=ticker,
-                        model_code=model_code,
-                        config=asset_config,
-                        required_artifacts=("model", "scaler", "eval", "forecast"),
-                    )
-                if cache_result is None:
-                    failures.append(
-                        {
-                            "ticker": ticker,
-                            "error": (
-                                "Aucun cache correspondant a la configuration courante "
-                                "ou au dernier entrainement compatible."
-                            ),
-                        }
-                    )
-                    continue
-            else:
-                cache_result = resolve_training_cache(
-                    ticker=ticker,
-                    model_code=model_code,
-                    config=asset_config,
-                    training_frame=training_frame,
-                    force_retrain=force_retrain,
-                    start_date=state["start_date"],
-                    end_date=state["end_date"],
-                    required_artifacts=("model", "scaler", "eval", "forecast"),
-                )
+            status_line.caption(
+                f"{status_prefix} - re-entrainement"
+                if force_retrain
+                else f"{status_prefix} - verification du cache / entrainement"
+            )
+            cache_result = resolve_training_cache(
+                ticker=ticker,
+                model_code=model_code,
+                config=asset_config,
+                training_frame=training_frame,
+                force_retrain=force_retrain,
+                start_date=state["start_date"],
+                end_date=state["end_date"],
+                required_artifacts=("model", "scaler", "eval", "forecast"),
+            )
             artifact_paths = cache_result["artifact_paths"]
             metrics = cache_result["metrics"]
             source = cache_result["source"]
@@ -1800,7 +1796,24 @@ def train_selected_assets(state, cache_only=False):
             "Forecast path indisponible pour certains caches legacy: "
             + ", ".join(sorted(set(legacy_path_assets)))
         )
-    return results, failures, prediction_plots, future_forecasts
+    return (
+        results,
+        failures,
+        prediction_plots,
+        future_forecasts,
+        {
+            "actual_start_date": (
+                actual_start_date.strftime("%Y-%m-%d")
+                if actual_start_date is not None
+                else None
+            ),
+            "actual_end_date": (
+                actual_end_date.strftime("%Y-%m-%d")
+                if actual_end_date is not None
+                else None
+            ),
+        },
+    )
 
 
 def render_training_section(state):
@@ -1809,13 +1822,8 @@ def render_training_section(state):
     horizon_label = state.get("horizon_label", "1 jour")
     horizon_steps = int(state.get("horizon_steps", 1))
     st.caption(
-        "Construit un signal quantitatif sur les actifs selectionnes a partir "
-        "du modele, de la fenetre, du nombre d'epochs et de l'horizon choisis. "
-        "Les runs sont mis en cache par actif, configuration et historique utilise. "
-        "Le backtest peut les reutiliser quand la date de cutoff correspond."
-    )
-    st.caption(
-        "Vous pouvez aussi recharger le dernier cache correspondant a la configuration courante, sans relancer l'entrainement."
+        "Genere les previsions du modele pour les actifs selectionnes. "
+        "Le cache est reutilise automatiquement quand il existe."
     )
     asset_count = len(state.get("assets", []))
     st.caption(f"Univers analyse: {asset_count} actif(s)")
@@ -1826,36 +1834,52 @@ def render_training_section(state):
         )
 
     action_cols = st.columns(2)
-    load_cached_clicked = action_cols[0].button(
-        "Afficher le cache precedent",
-        width="stretch",
-        help="Recharge uniquement les resultats deja en cache pour la configuration courante, sans relancer l'entrainement.",
-    )
-    generate_signals_clicked = action_cols[1].button(
+    generate_signals_clicked = action_cols[0].button(
         "Generer les signaux",
         width="stretch",
-        help="Entraine le modele sur les actifs coches avec les parametres de la sidebar.",
+        help="Utilise le cache exact quand il existe, sinon entraine ce qui manque.",
+    )
+    force_generate_clicked = action_cols[1].button(
+        "Relancer sans cache",
+        width="stretch",
+        help="Ignore le cache local et relance un entrainement complet pour chaque actif.",
     )
 
-    if load_cached_clicked or generate_signals_clicked:
+    if generate_signals_clicked or force_generate_clicked:
         if not state["assets"]:
             st.info("Aucun actif selectionne.")
         else:
             spinner_label = (
-                "Chargement du cache en cours..."
-                if load_cached_clicked
+                "Re-entrainement en cours..."
+                if force_generate_clicked
                 else "Entrainement en cours..."
             )
+            training_started_at = perf_counter()
             with st.spinner(spinner_label):
                 (
                     results,
                     failures,
                     prediction_plots,
                     future_forecasts,
+                    data_range,
                 ) = train_selected_assets(
                     state,
-                    cache_only=bool(load_cached_clicked),
+                    force_retrain=bool(force_generate_clicked),
                 )
+            training_duration = _format_elapsed_seconds(
+                perf_counter() - training_started_at
+            )
+            result_sources = {
+                row.get("Source")
+                for row in results
+                if row.get("Source") in {"Train", "Cache"}
+            }
+            if result_sources == {"Cache"}:
+                result_source_label = "Cache"
+            elif result_sources == {"Train"}:
+                result_source_label = "Train"
+            else:
+                result_source_label = "Train/Cache"
             st.session_state.training_results = results
             st.session_state.training_failures = failures
             st.session_state.training_prediction_plots = prediction_plots
@@ -1866,8 +1890,20 @@ def render_training_section(state):
                 "epochs": int(state["epochs"]),
                 "horizon_label": horizon_label,
                 "horizon_steps": horizon_steps,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "result_source": "Cache" if load_cached_clicked else "Train/Cache",
+                "start_date": (
+                    state["start_date"].isoformat()
+                    if state["start_date"] is not None
+                    else None
+                ),
+                "end_date": (
+                    state["end_date"].isoformat()
+                    if state["end_date"] is not None
+                    else None
+                ),
+                "actual_start_date": data_range.get("actual_start_date"),
+                "actual_end_date": data_range.get("actual_end_date"),
+                "result_source": result_source_label,
+                "duration": training_duration,
             }
 
     results = st.session_state.get("training_results", [])
@@ -1877,13 +1913,24 @@ def render_training_section(state):
     meta = st.session_state.get("training_meta")
 
     if meta:
+        start_label = (
+            meta.get("start_date")
+            or meta.get("actual_start_date")
+            or "historique disponible"
+        )
+        end_label = (
+            meta.get("end_date")
+            or meta.get("actual_end_date")
+            or "historique disponible"
+        )
         st.caption(
-            f"Derniere generation ({meta['timestamp']}) | "
+            f"Periode: {start_label} -> {end_label} | "
             f"Modele: {meta['model_type']} | "
             f"Fenetre: {meta['window_size']} | "
             f"Horizon: {meta.get('horizon_label', '1 jour')} ({meta.get('horizon_steps', 1)} pas) | "
             f"Epochs: {meta['epochs']} | "
-            f"Source: {meta.get('result_source', 'Train/Cache')}"
+            f"Source: {meta.get('result_source', 'Train/Cache')} | "
+            f"Temps de generation: {meta.get('duration', '-')}"
         )
 
     if results:
@@ -1981,9 +2028,6 @@ def render_training_section(state):
                     st.line_chart(chart_data, width="stretch")
     if future_forecasts:
         st.markdown("#### Projections futures")
-        st.caption(
-            "IC 95%: borne basse/haute estimee a partir de l'erreur hors echantillon du modele."
-        )
         forecast_df = pd.DataFrame(future_forecasts).sort_values(
             ["Actif", "Etape"]
         )
@@ -2029,9 +2073,18 @@ def render_sidebar():
         ]
         default_categories = [
             name
-            for name in ["Beautiful Seven (US)"]
+            for name in ["Magnificent Seven (US)"]
             if name in available_categories
         ]
+        legacy_category_name = "Beautiful Seven (US)"
+        current_category_name = "Magnificent Seven (US)"
+        if "selected_asset_categories" in st.session_state:
+            selected_state = list(st.session_state.get("selected_asset_categories") or [])
+            if legacy_category_name in selected_state and current_category_name not in selected_state:
+                st.session_state.selected_asset_categories = [
+                    current_category_name if name == legacy_category_name else name
+                    for name in selected_state
+                ]
         selected_categories = st.multiselect(
             "Categories d'actions",
             options=available_categories,
@@ -2042,7 +2095,7 @@ def render_sidebar():
         )
 
         if "assets_initialized" not in st.session_state:
-            initial_selected = set(category_assets.get("Beautiful Seven (US)", []))
+            initial_selected = set(category_assets.get("Magnificent Seven (US)", []))
             st.session_state.assets_initialized = True
         else:
             initial_selected = set()
@@ -2120,6 +2173,7 @@ def render_sidebar():
             "Date de debut",
             value=None,
             help=HELP_TEXT["start_date"],
+            label_visibility="collapsed",
         )
 
         st.markdown("### Date de fin")
@@ -2127,6 +2181,7 @@ def render_sidebar():
             "Date de fin",
             value=None,
             help=HELP_TEXT["end_date"],
+            label_visibility="collapsed",
         )
 
         st.markdown("### Parametres du modele")
@@ -2160,15 +2215,10 @@ def render_sidebar():
             help=HELP_TEXT["horizon"],
         )
         horizon_steps = HORIZON_OPTIONS[horizon_label]
-        force_retrain = st.checkbox(
-            "Forcer le re-entrainement",
-            value=False,
-            help=HELP_TEXT["force_retrain"],
-        )
         if "generate_curves" not in st.session_state:
             st.session_state.generate_curves = False
         if st.button(
-            "Charger le marche",
+            "Afficher les graphes",
             width="stretch",
             help=HELP_TEXT["generate_curves"],
         ):
@@ -2263,19 +2313,11 @@ def render_sidebar():
         "model_type": model_type,
         "horizon_label": horizon_label,
         "horizon_steps": horizon_steps,
-        "force_retrain": force_retrain,
         "generate_curves": st.session_state.generate_curves,
     }
 
 
 def render_predictions_tab(state):
-    st.subheader(
-        "Marche et Signaux",
-        help="Vue historique des prix et sorties du modele pour les actifs selectionnes.",
-    )
-    st.caption(
-        "Visualisez l'historique de marche, les sorties du modele et les projections futures."
-    )
     if not state["assets"]:
         st.info("Aucun actif selectionne.")
         return
@@ -2284,7 +2326,7 @@ def render_predictions_tab(state):
 
     if not state.get("generate_curves"):
         st.markdown(
-            "Selectionnez des actifs et cliquez sur \"Charger le marche\""
+            "Selectionnez des actifs et cliquez sur \"Afficher les graphes\""
         )
         return
 
@@ -2313,10 +2355,14 @@ def render_predictions_tab(state):
         return
 
     combined = pd.concat(frames, axis=1).sort_index()
-    if not combined.empty:
-        min_date = combined.index.min().strftime("%Y-%m-%d")
-        max_date = combined.index.max().strftime("%Y-%m-%d")
-        st.caption(f"Plage de donnees chargees: {min_date} -> {max_date}")
+    st.markdown("---")
+    st.subheader(
+        "Marché et signaux",
+        help="Vue historique des prix et sorties du modele pour les actifs selectionnes.",
+    )
+    st.caption(
+        "Visualisez l'historique de marche, les sorties du modele et les projections futures."
+    )
     available_assets = list(combined.columns)
     if len(available_assets) <= MAX_DEFAULT_PLOT_ASSETS:
         default_plot_assets = available_assets
@@ -2360,36 +2406,17 @@ def render_predictions_tab(state):
         if resample_rule != "D":
             plot_data = plot_data.resample(resample_rule).last()
         plot_data = _downsample_plot_frame(plot_data, max_points)
-        st.caption(
-            f"Graphe affiche: {plot_data.shape[1]} actifs | "
-            f"{len(plot_data)} points"
-        )
         st.line_chart(plot_data)
-    forecast_rows = st.session_state.get("training_future_forecasts", [])
-    if forecast_rows:
-        with st.expander("Apercu des projections"):
-            forecast_df = pd.DataFrame(forecast_rows).sort_values(
-                ["Actif", "Etape"]
-            )
-            forecast_df_display = _prepare_table_display(
-                forecast_df,
-                number_columns=[(["Prix predit"], 2, "")],
-            )
-            st.dataframe(forecast_df_display, width="stretch", hide_index=True)
-    else:
-        with st.expander("Apercu des premieres lignes"):
-            st.dataframe(combined.head(10), width="stretch", hide_index=False)
-    st.dataframe(combined.tail(10), width="stretch", hide_index=False)
+        if not combined.empty:
+            min_date = combined.index.min().strftime("%Y-%m-%d")
+            max_date = combined.index.max().strftime("%Y-%m-%d")
+            st.caption(f"Plage de donnees chargees: {min_date} -> {max_date}")
 
 
 def render_backtest_tab(state):
     st.subheader(
-        "Backtests et Benchmarks",
+        "Comparaison des stratégies",
         help=HELP_TEXT["strategy_metrics"],
-    )
-    st.caption(
-        "Compare la strategie pilotee par le modele a des references simples "
-        "(Naive, Equal Weight et benchmark de marche)."
     )
     if not state["assets"]:
         st.info("Aucun actif selectionne.")
@@ -2400,10 +2427,6 @@ def render_backtest_tab(state):
         f"Fenetre {int(state['window_size'])} | "
         f"Horizon {state.get('horizon_label', '1 jour')} | "
         f"Epochs {int(state['epochs'])}"
-    )
-    st.caption(
-        "Le backtest reutilise le cache d'entrainement par actif/config/date de cutoff "
-        "quand il existe deja."
     )
     recommended_risk_horizon = _sync_backtest_risk_horizon_default(
         int(state.get("horizon_steps", 1))
@@ -2497,11 +2520,6 @@ def render_backtest_tab(state):
                 key="backtest_max_weight",
                 help=HELP_TEXT["max_weight"],
             )
-    st.caption(
-        "Chaque periode correspond a une decision d'investissement historique simulee "
-        "(une date de rebalance): on entraine sur l'historique disponible a cette date, "
-        "puis on compare la projection au marche reel."
-    )
     if int(num_periods) < 6:
         st.warning(
             "Moins de 6 periodes: les metriques annualisees et ratios "
@@ -2527,7 +2545,7 @@ def render_backtest_tab(state):
         errors = []
         progress_bar = st.progress(0)
         status_line = st.empty()
-        final_status_message = "Backtest en attente"
+        final_status_message = ""
         factor_histories = None
 
         def on_backtest_progress(current_step, total_steps, message):
@@ -2585,6 +2603,35 @@ def render_backtest_tab(state):
                     final_status_message = "Backtest interrompu: erreurs de chargement"
                     st.session_state.backtest_errors = errors
                 else:
+                    actual_history_start = None
+                    actual_history_end = None
+                    for history_frame in histories.values():
+                        if history_frame is None or history_frame.empty:
+                            continue
+                        history_dates = pd.to_datetime(history_frame["Date"])
+                        frame_start = history_dates.min()
+                        frame_end = history_dates.max()
+                        if (
+                            actual_history_start is None
+                            or frame_start < actual_history_start
+                        ):
+                            actual_history_start = frame_start
+                        if actual_history_end is None or frame_end > actual_history_end:
+                            actual_history_end = frame_end
+                    if benchmark_history is not None and not benchmark_history.empty:
+                        benchmark_dates = pd.to_datetime(benchmark_history["Date"])
+                        benchmark_start = benchmark_dates.min()
+                        benchmark_end = benchmark_dates.max()
+                        if (
+                            actual_history_start is None
+                            or benchmark_start < actual_history_start
+                        ):
+                            actual_history_start = benchmark_start
+                        if (
+                            actual_history_end is None
+                            or benchmark_end > actual_history_end
+                        ):
+                            actual_history_end = benchmark_end
                     config = {
                         "window_size": int(state["window_size"]),
                         "epochs": int(state["epochs"]),
@@ -2688,9 +2735,8 @@ def render_backtest_tab(state):
                                 benchmark_refresh_from_session = False
                     if cached_backtest is not None:
                         progress_bar.progress(1.0)
-                        if not benchmark_refresh_from_session:
-                            final_status_message = "Backtest charge depuis le cache"
-                        status_line.caption(final_status_message)
+                        if benchmark_refresh_from_session:
+                            status_line.caption(final_status_message)
                         backtest_results = cached_backtest["results"]
                     try:
                         if cached_backtest is None:
@@ -2746,6 +2792,16 @@ def render_backtest_tab(state):
                             "end_date": state["end_date"].isoformat()
                             if state["end_date"] is not None
                             else None,
+                            "actual_start_date": (
+                                actual_history_start.strftime("%Y-%m-%d")
+                                if actual_history_start is not None
+                                else None
+                            ),
+                            "actual_end_date": (
+                                actual_history_end.strftime("%Y-%m-%d")
+                                if actual_history_end is not None
+                                else None
+                            ),
                             "cutoff_dates": backtest_results.get("cutoff_dates", []),
                             "result_source": (
                                 "Benchmark"
@@ -2755,7 +2811,10 @@ def render_backtest_tab(state):
                             "backtest_cache_key": cache_key,
                         }
             finally:
-                status_line.caption(final_status_message)
+                if final_status_message:
+                    status_line.caption(final_status_message)
+                else:
+                    status_line.empty()
 
     errors = st.session_state.get("backtest_errors", [])
     if errors:
@@ -2766,13 +2825,30 @@ def render_backtest_tab(state):
     results = st.session_state.get("backtest_results")
     meta = st.session_state.get("backtest_meta")
     if not results or not meta:
-        st.info("Lancez la comparaison pour voir les resultats portefeuille et benchmarks.")
         return
 
     run_quality = _backtest_run_quality(results, meta)
+    initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
+    strategy_metrics_source = results["strategy_metrics"].copy()
+    strategy_metrics_source["PnL cumule (€)"] = (
+        pd.to_numeric(strategy_metrics_source["Rendement cumule"], errors="coerce")
+        * initial_capital
+    )
+    strategy_lookup = _strategy_metric_lookup(strategy_metrics_source)
+    model_metrics = strategy_lookup.get("Modele", {})
 
+    start_label = (
+        meta.get("start_date")
+        or meta.get("actual_start_date")
+        or "historique disponible"
+    )
+    end_label = (
+        meta.get("end_date")
+        or meta.get("actual_end_date")
+        or "historique disponible"
+    )
     st.caption(
-        f"Dernier backtest ({meta['timestamp']}) | "
+        f"Periode: {start_label} -> {end_label} | "
         f"Modele: {meta['model_type']} | Fenetre: {meta['window_size']} | "
         f"Horizon: {meta['horizon_label']} ({meta['horizon_steps']} pas) | "
         f"Periodes: {meta['num_periods']} | "
@@ -2787,32 +2863,46 @@ def render_backtest_tab(state):
     )
     if meta.get("cutoff_dates"):
         st.caption("Dates de rebalance: " + ", ".join(meta["cutoff_dates"]))
-    if "Source training" in results["asset_details"].columns:
-        source_counts = (
-            results["asset_details"]["Source training"]
-            .value_counts(dropna=False)
-            .to_dict()
-        )
-        source_parts = [
-            f"{source.lower()}: {count}"
-            for source, count in source_counts.items()
-            if pd.notna(source)
-        ]
-        if source_parts:
-            st.caption(
-                "Sources d'entrainement reutilisees sur ce backtest: "
-                + " | ".join(source_parts)
-            )
-    quality_cols = st.columns(5)
+
+    headline_cols = st.columns(4)
+    headline_cols[0].metric(
+        "Rendement cumule modele",
+        f"{float(model_metrics.get('Rendement cumule')):.2%}"
+        if pd.notna(model_metrics.get("Rendement cumule"))
+        else "n/a",
+        help="Performance totale du modele sur le backtest.",
+    )
+    headline_cols[1].metric(
+        "PnL cumule modele",
+        _format_currency_eur(model_metrics.get("PnL cumule (€)")),
+        help=f"PnL cumule du modele sur une base de {int(initial_capital):,} €.".replace(",", " "),
+    )
+    headline_cols[2].metric(
+        "Max drawdown modele",
+        f"{float(model_metrics.get('Max drawdown')):.2%}"
+        if pd.notna(model_metrics.get("Max drawdown"))
+        else "n/a",
+        help=HELP_TEXT["max_drawdown"],
+    )
+    headline_cols[3].metric(
+        "VaR 95% modele",
+        f"{float(model_metrics.get('VaR 95%')):.2%}"
+        if pd.notna(model_metrics.get("VaR 95%"))
+        else "n/a",
+        help=HELP_TEXT["var_95"],
+    )
+
+    st.markdown("#### Qualite du run")
+    quality_cols = st.columns(4)
     quality_cols[0].metric(
         "Periodes backtest",
         run_quality["period_count"],
         help="Nombre de periodes utilisees pour le backtest courant.",
     )
     quality_cols[1].metric(
-        "Poids max modele",
-        f"{run_quality['max_weight']:.1%}" if pd.notna(run_quality["max_weight"]) else "n/a",
-        help=HELP_TEXT["max_weight_metric"],
+        "Turnover modele",
+        f"{run_quality['turnover']:.2%}" if pd.notna(run_quality["turnover"]) else "n/a",
+        help=HELP_TEXT["turnover"],
     )
     quality_cols[2].metric(
         "Positions effectives",
@@ -2826,24 +2916,11 @@ def render_backtest_tab(state):
         f"{run_quality['top3_share']:.1%}" if pd.notna(run_quality["top3_share"]) else "n/a",
         help=HELP_TEXT["top3_weight_share"],
     )
-    quality_cols[4].metric(
-        "Turnover modele",
-        f"{run_quality['turnover']:.2%}" if pd.notna(run_quality["turnover"]) else "n/a",
-        help=HELP_TEXT["turnover"],
-    )
-    st.caption(
-        "Concentration du portefeuille modele: "
-        f"`{run_quality['concentration_label']}`"
-    )
     for warning in run_quality["warnings"]:
+        if warning.startswith("Turnover eleve:"):
+            continue
         st.warning(warning)
 
-    initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
-    strategy_metrics_source = results["strategy_metrics"].copy()
-    strategy_metrics_source["PnL cumule (€)"] = (
-        pd.to_numeric(strategy_metrics_source["Rendement cumule"], errors="coerce")
-        * initial_capital
-    )
     strategy_metrics = _prepare_table_display(
         strategy_metrics_source.sort_values("Rendement cumule", ascending=False),
         order=[
@@ -2914,6 +2991,40 @@ def render_backtest_tab(state):
         results["period_returns"],
         results.get("benchmark_label", meta["benchmark_label"]),
     )
+    period_returns = _format_percent_columns(
+        results["period_returns"],
+        [
+            "Modele",
+            "Naive",
+            "Equal Weight",
+            results.get("benchmark_label", meta["benchmark_label"]),
+            "Turnover modele",
+            "Turnover naive",
+            "Turnover equal",
+            "Cout modele",
+            "Cout naive",
+            "Cout equal",
+        ],
+    )
+    period_returns = _prepare_table_display(
+        period_returns.sort_values("Date realisee", ascending=False),
+        order=[
+            "Date de rebalance",
+            "Date realisee",
+            "Modele",
+            "Naive",
+            "Equal Weight",
+            results.get("benchmark_label", meta["benchmark_label"]),
+            "Turnover modele",
+            "Turnover naive",
+            "Turnover equal",
+            "Cout modele",
+            "Cout naive",
+            "Cout equal",
+        ],
+    )
+    st.dataframe(period_returns, width="stretch", hide_index=True)
+    _render_table_help("period_details")
 
     st.markdown("### Qualite du signal par actif")
     forecast_summary = _format_percent_columns(
@@ -2955,6 +3066,7 @@ def render_backtest_tab(state):
                 "",
             )
         ],
+        keep_remaining=False,
     )
     st.dataframe(forecast_summary, width="stretch", hide_index=True)
     _render_table_help("forecast_summary")
@@ -2966,42 +3078,6 @@ def render_backtest_tab(state):
             percent_columns=["Turnover", "Cout"],
         )
         st.dataframe(allocation_history, width="stretch", hide_index=True)
-
-    with st.expander("Details par periode"):
-        period_returns = _format_percent_columns(
-            results["period_returns"],
-            [
-                "Modele",
-                "Naive",
-                "Equal Weight",
-                results.get("benchmark_label", meta["benchmark_label"]),
-                "Turnover modele",
-                "Turnover naive",
-                "Turnover equal",
-                "Cout modele",
-                "Cout naive",
-                "Cout equal",
-            ],
-        )
-        period_returns = _prepare_table_display(
-            period_returns.sort_values("Date realisee", ascending=False),
-            order=[
-                "Date de rebalance",
-                "Date realisee",
-                "Modele",
-                "Naive",
-                "Equal Weight",
-                results.get("benchmark_label", meta["benchmark_label"]),
-                "Turnover modele",
-                "Turnover naive",
-                "Turnover equal",
-                "Cout modele",
-                "Cout naive",
-                "Cout equal",
-            ],
-        )
-        st.dataframe(period_returns, width="stretch", hide_index=True)
-        _render_table_help("period_details")
 
     st.markdown("### Export des resultats")
     export_cols = st.columns(3)
@@ -3063,12 +3139,8 @@ def render_backtest_tab(state):
 
 def render_executive_summary_tab(state):
     st.subheader(
-        "Synthese Decisionnelle",
+        "Résumé",
         help=HELP_TEXT["executive_summary"],
-    )
-    st.caption(
-        "Lecture condensee du dernier backtest: verdict, positionnement du modele, "
-        "classement des strategies et allocation actuelle."
     )
     results = st.session_state.get("backtest_results")
     meta = st.session_state.get("backtest_meta")
@@ -3090,102 +3162,97 @@ def render_executive_summary_tab(state):
             st.info(f"Verdict: {summary['verdict_label']}")
         else:
             st.warning(f"Verdict: {summary['verdict_label']}")
-        st.write(summary["headline"])
-        st.caption(summary["comparison_text"])
-        verdict_cols = st.columns(4)
-        verdict_cols[0].metric(
-            "References battues",
-            f"{summary['model_beats_count']}/{summary['comparison_count']}"
-            if summary["comparison_count"] > 0
-            else "n/a",
-            help="Nombre de references que le modele depasse en rendement annualise.",
+        st.caption(
+            f"Actifs testes: {summary['asset_count']} | "
+            f"Capital initial: {_format_currency_eur(initial_capital)}"
         )
-        verdict_cols[1].metric(
-            "Periodes observees",
-            summary["period_count"],
-            help="Nombre de decisions historiques simulees dans le backtest courant.",
-        )
-        verdict_cols[2].metric(
-            "PnL modele (€)",
-            _format_currency_eur(summary["model_pnl_eur"]),
-            help=f"PnL cumule du modele sur une base de {int(initial_capital):,} €.".replace(",", " "),
-        )
-        verdict_cols[3].metric(
+
+        st.markdown("#### Lecture cle")
+        primary_cols = st.columns(4)
+        primary_cols[0].metric(
             "Rendement cumule modele",
             f"{summary['model_cumulative_return']:.2%}"
             if pd.notna(summary["model_cumulative_return"])
             else "n/a",
             help="Performance totale du modele sur la fenetre de backtest.",
         )
-        risk_cols = st.columns(4)
-        risk_cols[0].metric(
+        primary_cols[1].metric(
+            "PnL modele (€)",
+            _format_currency_eur(summary["model_pnl_eur"]),
+            help=f"PnL cumule du modele sur une base de {int(initial_capital):,} €.".replace(",", " "),
+        )
+        primary_cols[2].metric(
             "Max drawdown modele",
             f"{summary['model_max_drawdown']:.2%}"
             if pd.notna(summary["model_max_drawdown"])
             else "n/a",
             help=HELP_TEXT["max_drawdown"],
         )
-        risk_cols[1].metric(
-            "Turnover modele",
-            f"{summary['model_turnover']:.2%}"
-            if pd.notna(summary["model_turnover"])
-            else "n/a",
-            help=HELP_TEXT["turnover"],
-        )
-        risk_cols[2].metric(
+        primary_cols[3].metric(
             "VaR 95% modele",
             f"{summary['model_var_95']:.2%}"
             if pd.notna(summary["model_var_95"])
             else "n/a",
             help=HELP_TEXT["var_95"],
         )
-        risk_cols[3].metric(
+
+        st.markdown("#### Validation")
+        validation_cols = st.columns(4)
+        validation_cols[0].metric(
+            "References battues",
+            f"{summary['model_beats_count']}/{summary['comparison_count']}"
+            if summary["comparison_count"] > 0
+            else "n/a",
+            help="Nombre de references que le modele depasse en rendement annualise.",
+        )
+        validation_cols[1].metric(
+            "Periodes observees",
+            summary["period_count"],
+            help="Nombre de decisions historiques simulees dans le backtest courant.",
+        )
+        validation_cols[2].metric(
+            "Beat rate vs Naive",
+            f"{summary['beat_naive_rate']:.1%}"
+            if pd.notna(summary["beat_naive_rate"])
+            else "n/a",
+            help=HELP_TEXT["beat_rate"],
+        )
+        validation_cols[3].metric(
+            "Meilleure strategie",
+            summary["best_strategy"],
+            help=HELP_TEXT["best_strategy"],
+        )
+
+        st.markdown("#### Lecture secondaire")
+        secondary_cols = st.columns(4)
+        secondary_cols[0].metric(
+            "Turnover modele",
+            f"{summary['model_turnover']:.2%}"
+            if pd.notna(summary["model_turnover"])
+            else "n/a",
+            help=HELP_TEXT["turnover"],
+        )
+        secondary_cols[1].metric(
             "CVaR 95% modele",
             f"{summary['model_cvar_95']:.2%}"
             if pd.notna(summary["model_cvar_95"])
             else "n/a",
             help=HELP_TEXT["cvar_95"],
         )
-
-    secondary_cols = st.columns(4)
-    secondary_cols[0].metric(
-        "Beat rate vs Naive",
-        f"{summary['beat_naive_rate']:.1%}"
-        if pd.notna(summary["beat_naive_rate"])
-        else "n/a",
-        help=HELP_TEXT["beat_rate"],
-    )
-    secondary_cols[1].metric(
-        "Actifs testes",
-        summary["asset_count"],
-        help="Nombre d'actifs inclus dans le dernier backtest.",
-    )
-    secondary_cols[2].metric(
-        "Meilleure strategie",
-        summary["best_strategy"],
-        help=HELP_TEXT["best_strategy"],
-    )
-    secondary_cols[3].metric(
-        "Rendement annualise modele",
-        f"{summary['model_annualized_return']:.2%}"
-        if pd.notna(summary["model_annualized_return"])
-        else "n/a",
-        help=HELP_TEXT["annualized_return"],
-    )
-
-    tertiary_cols = st.columns(2)
-    tertiary_cols[0].metric(
-        "Sharpe modele",
-        f"{summary['model_sharpe']:.2f}"
-        if pd.notna(summary["model_sharpe"])
-        else "n/a",
-        help=HELP_TEXT["sharpe"],
-    )
-    tertiary_cols[1].metric(
-        "Capital initial",
-        _format_currency_eur(initial_capital),
-        help=HELP_TEXT["initial_capital"],
-    )
+        secondary_cols[2].metric(
+            "Rendement annualise modele",
+            f"{summary['model_annualized_return']:.2%}"
+            if pd.notna(summary["model_annualized_return"])
+            else "n/a",
+            help=HELP_TEXT["annualized_return"],
+        )
+        secondary_cols[3].metric(
+            "Sharpe modele",
+            f"{summary['model_sharpe']:.2f}"
+            if pd.notna(summary["model_sharpe"])
+            else "n/a",
+            help=HELP_TEXT["sharpe"],
+        )
 
     st.markdown("### Conclusion")
     st.write(
@@ -3214,11 +3281,13 @@ def render_executive_summary_tab(state):
         strategy_b_options = [
             strategy for strategy in available_strategies if strategy != strategy_a
         ]
-        default_b_name = (
-            "Equal Weight"
-            if "Equal Weight" in strategy_b_options
-            else strategy_b_options[0]
-        )
+        benchmark_default = results.get("benchmark_label", meta.get("benchmark_label"))
+        if benchmark_default in strategy_b_options:
+            default_b_name = benchmark_default
+        elif "Equal Weight" in strategy_b_options:
+            default_b_name = "Equal Weight"
+        else:
+            default_b_name = strategy_b_options[0]
         strategy_b = compare_cols[1].selectbox(
             "Strategie B",
             options=strategy_b_options,
@@ -3320,12 +3389,8 @@ def render_executive_summary_tab(state):
 
 def render_allocation_tab(state):
     st.subheader(
-        "Allocation Recommandee",
+        "Portefeuille",
         help=HELP_TEXT["allocation_view"],
-    )
-    st.caption(
-        "Derniere allocation issue du backtest: repartition des poids, "
-        "niveau de concentration, signaux et contribution au risque."
     )
     results = st.session_state.get("backtest_results")
     meta = st.session_state.get("backtest_meta")
@@ -3347,6 +3412,10 @@ def render_allocation_tab(state):
     latest_model_row = latest_model_rows.iloc[-1]
     latest_cutoff_date = pd.to_datetime(latest_model_row["Date de rebalance"])
     latest_future_date = pd.to_datetime(latest_model_row["Date realisee"])
+    portfolio_horizon_steps = max(1, int(meta.get("horizon_steps", 1)))
+    recommended_end_date = latest_future_date + pd.offsets.BDay(
+        portfolio_horizon_steps
+    )
 
     model_weights = _parse_weights_text(latest_model_row["Poids"])
     if model_weights.empty:
@@ -3374,76 +3443,76 @@ def render_allocation_tab(state):
     initial_capital = float(st.session_state.get("backtest_initial_capital", 10_000.0))
     model_pnl_eur = _safe_float(model_metrics.get("Rendement cumule")) * initial_capital
 
-    st.markdown("### Lecture condensee")
-    quick_cols = st.columns(4)
-    quick_cols[0].metric(
-        "Date de rebalance",
-        latest_cutoff_date.strftime("%Y-%m-%d"),
-        help="Date a laquelle les poids du portefeuille ont ete recalcules.",
-    )
-    quick_cols[1].metric(
-        "Positions actives",
-        active_positions,
-        help=HELP_TEXT["active_positions"],
-    )
-    quick_cols[2].metric(
-        "Top 3 poids",
-        f"{top3_share:.1%}",
-        help=HELP_TEXT["top3_weight_share"],
-    )
-    quick_cols[3].metric(
-        "Niveau concentration",
-        concentration_label,
-        help=HELP_TEXT["concentration_label"],
+    st.caption(
+        "Portefeuille conseille: "
+        f"{latest_future_date.strftime('%Y-%m-%d')} -> "
+        f"{recommended_end_date.strftime('%Y-%m-%d')}"
     )
 
-    st.markdown("### Risque et performance")
-    perf_cols = st.columns(4)
-    perf_cols[0].metric(
+    st.markdown("### Lecture cle")
+    primary_cols = st.columns(4)
+    primary_cols[0].metric(
         "Rendement cumule",
         f"{float(model_metrics.get('Rendement cumule', np.nan)):.2%}",
         help="Performance totale observee sur la fenetre de backtest.",
     )
-    perf_cols[1].metric(
+    primary_cols[1].metric(
         "PnL cumule (€)",
         _format_currency_eur(model_pnl_eur),
         help=f"Gain ou perte du portefeuille modele sur une base de {int(initial_capital):,} €.".replace(",", " "),
     )
-    perf_cols[2].metric(
+    primary_cols[2].metric(
         "Max drawdown",
         f"{float(model_metrics.get('Max drawdown', np.nan)):.2%}",
         help=HELP_TEXT["max_drawdown"],
     )
-    perf_cols[3].metric(
+    primary_cols[3].metric(
         "VaR 95%",
         f"{float(model_metrics.get('VaR 95%', np.nan)):.2%}",
         help=HELP_TEXT["var_95"],
     )
 
-    advanced_cols = st.columns(4)
-    advanced_cols[0].metric(
+    st.markdown("### Structure du portefeuille")
+    structure_cols = st.columns(4)
+    structure_cols[0].metric(
+        "Positions actives",
+        active_positions,
+        help=HELP_TEXT["active_positions"],
+    )
+    structure_cols[1].metric(
+        "Top 3 poids",
+        f"{top3_share:.1%}",
+        help=HELP_TEXT["top3_weight_share"],
+    )
+    structure_cols[2].metric(
+        "Niveau concentration",
+        concentration_label,
+        help=HELP_TEXT["concentration_label"],
+    )
+    structure_cols[3].metric(
         "Turnover moyen",
         f"{float(model_metrics.get('Turnover moyen', np.nan)):.2%}",
         help=HELP_TEXT["turnover"],
     )
-    advanced_cols[1].metric(
+
+    st.markdown("### Lecture secondaire")
+    advanced_cols = st.columns(4)
+    advanced_cols[0].metric(
         "Rendement annualise",
         f"{float(model_metrics.get('Rendement annualise', np.nan)):.2%}",
         help=HELP_TEXT["annualized_return"],
     )
-    advanced_cols[2].metric(
+    advanced_cols[1].metric(
         "Sharpe",
         f"{float(model_metrics.get('Sharpe', np.nan)):.2f}",
         help=HELP_TEXT["sharpe"],
     )
-    advanced_cols[3].metric(
+    advanced_cols[2].metric(
         "CVaR 95%",
         f"{float(model_metrics.get('CVaR 95%', np.nan)):.2%}",
         help=HELP_TEXT["cvar_95"],
     )
-
-    structure_cols = st.columns(1)
-    structure_cols[0].metric(
+    advanced_cols[3].metric(
         "Calmar",
         f"{float(model_metrics.get('Calmar', np.nan)):.2f}",
         help=HELP_TEXT["calmar"],
@@ -3516,6 +3585,7 @@ def render_allocation_tab(state):
     chart_data = weight_frame.set_index("Actif")[["Poids modele"]]
     chart_cols = st.columns(2)
     show_weight_pie = False
+    st.markdown("### Allocation actuelle")
     if "Contribution risque" in weight_frame.columns:
         risk_chart = (
             weight_frame[["Actif", "Contribution risque"]]
@@ -3644,10 +3714,10 @@ def main():
 
     tab_predictions, tab_backtest, tab_summary, tab_allocation = st.tabs(
         [
-            "Marche et Signaux",
-            "Backtests et Benchmarks",
-            "Synthese Decisionnelle",
-            "Allocation Recommandee",
+            "Prévisions",
+            "Comparaison des stratégies",
+            "Résumé",
+            "Portefeuille",
         ]
     )
 
