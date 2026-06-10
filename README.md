@@ -1,25 +1,29 @@
 # Deep Finance Project
 
-Projet de prediction multi-actifs avec:
-- dashboard Streamlit
-- entrainement local du modele
+Multi-asset price prediction platform with local model training, a backtesting engine, and an interactive Streamlit dashboard.
 
-## Important
+## Features
 
-- Python 3.12 requis
-- version testee: `Python 3.12.12`
-- eviter Python 3.14, non compatible avec la stack TensorFlow utilisee ici
+- Multi-asset market data ingestion (Yahoo Finance), with local caching in `app/data/`
+- Deep learning model training (TensorFlow) with a training cache to avoid redundant runs
+- Backtesting engine with portfolio optimization
+- Interactive Streamlit dashboard to explore predictions, curves, and portfolio results
+
+## Requirements
+
+- **Python 3.12** (tested with 3.12.12)
+- Avoid Python 3.14: incompatible with the TensorFlow stack used here
 
 ## Installation
 
-### Option rapide (macOS / Linux)
+### Quick option (macOS / Linux)
 
 ```bash
 bash setup.sh
 source venv/bin/activate
 ```
 
-### Option manuelle (macOS / Linux)
+### Manual option (macOS / Linux)
 
 ```bash
 python3.12 -m venv venv
@@ -28,7 +32,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### Option manuelle (Windows PowerShell)
+### Manual option (Windows PowerShell)
 
 ```powershell
 py -3.12 -m venv venv
@@ -37,18 +41,21 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-## Lancer l'app
+## Run the app
 
 ```bash
-cd deep-finance-project
 source venv/bin/activate
 streamlit run app/streamlit_app.py
 ```
 
-Ouvrir ensuite `http://localhost:8501`.
+Then open http://localhost:8501
 
-## Premier lancement
+## First run
 
-- l'application peut telecharger les historiques depuis Yahoo Finance si `app/data/` est vide
-- les fichiers de donnees et les caches locaux sont ensuite recrees automatiquement dans `app/data/`
-- le premier lancement peut donc etre plus lent que les suivants
+- If `app/data/` is empty, the app downloads price history from Yahoo Finance
+- Data files and local caches are then rebuilt automatically in `app/data/`
+- The first run is therefore slower than subsequent ones
+
+## Disclaimer
+
+Educational project. Nothing here is investment advice.
